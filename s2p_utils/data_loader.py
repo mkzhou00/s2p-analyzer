@@ -3,6 +3,7 @@ import os
 import numpy as np
 import scipy.io as sio
 import pandas as pd
+import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
@@ -48,38 +49,37 @@ class DataLoader:
         self.im_ts = None
 
         # Session start and end timestamps. (csv)
-        self.start_ts = None
-        self.end_ts = None
+        self.voltages = None
 
-    def F(self) -> np.array:
+    def get_F(self) -> np.array:
         if not self.F:
             self.F = np.load(os.path.join(self.dir, "F.npy"), allow_pickle=True)
         return self.F
 
-    def Fneu(self) -> np.array:
+    def get_Fneu(self) -> np.array:
         if not self.Fneu:
             self.Fneu = np.load(os.path.join(self.dir, "Fneu.npy"), allow_pickle=True)
         return self.Fneu
 
-    def spks(self) -> np.array:
+    def get_spks(self) -> np.array:
         if not self.spks:
             self.spks = np.load(os.path.join(self.dir, "spks.npy"), allow_pickle=True)
         return self.spks
 
-    def stat(self) -> np.array:
+    def get_stat(self) -> np.array:
         if not self.stat:
             self.stat = np.load(os.path.join(self.dir, "stat.npy"), allow_pickle=True)
         return self.stat
 
-    def ops(self) -> np.array:
+    def get_ops(self) -> np.array:
         if not self.ops:
             self.ops = np.load(os.path.join(self.dir, "ops.npy"), allow_pickle=True)
         return self.ops
 
-    def is_cell(self) -> np.array:
+    def get_is_cell(self) -> np.array:
         if not self.is_cell:
             self.is_cell = np.load(
-                os.path.join(self.dir, "is_cell.npy"), allow_pickle=True
+                os.path.join(self.dir, "iscell.npy"), allow_pickle=True
             )
         return self.is_cell
 
@@ -87,12 +87,12 @@ class DataLoader:
         matfile = get_file_with_type(".mat", self.dir)
         self.behave = sio.loadmat(matfile)
 
-    def behave(self) -> dict:
+    def get_behave(self) -> dict:
         if not self.behave:
             self._load_behave()
         return self.behave
 
-    def event_df(self) -> pd.DataFrame:
+    def get_event_df(self) -> pd.DataFrame:
         if not self.behave:
             self._load_behave()
 
@@ -104,7 +104,7 @@ class DataLoader:
         
         return self.event_df
 
-    def im_ts(self) -> np.array:
+    def get_im_ts(self) -> np.array:
         if not self.im_ts:
             xmlfile = get_file_with_type(".xml", self.dir)
             tree = ET.parse(xmlfile)
@@ -115,3 +115,8 @@ class DataLoader:
 
         return self.im_ts
 
+    def get_voltages(self) -> np.array:
+        if not self.voltages:
+            csv = get_file_with_type(".csv", self.dir)
+            self.voltages = pd.read_csv(csv)
+        return self.voltages
