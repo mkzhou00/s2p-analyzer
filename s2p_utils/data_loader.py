@@ -23,7 +23,7 @@ def get_file_with_type(type: str, dir: str) -> str:
 
 
 class DataLoader:
-    def __init__(self, data_dir: str) -> None:
+    def __init__(self, data_dir: str, num_planes: int) -> None:
         """
         Data set inclduing Suite2p, behavioral, and image ts. All the files
         are lazy loaded upon request.
@@ -31,60 +31,83 @@ class DataLoader:
         Args:
             data_dir: Data directory containing all the required files.
         """
-        self.dir = data_dir
+        self.s2p_dir = data_dir + 'suite2p/'
+        self.file_dir = data_dir + 'files/'
+        self.plane_subfolder = 'plane'
+        self.event_dir = data_dir
+        self.num_plane = num_planes
 
         # Suite2p output.
-        self.F = None
-        self.Fneu = None
-        self.spks = None
-        self.stat = None
-        self.ops = None
-        self.is_cell = None
+        self.F = []
+        self.Fneu = []
+        self.spks = []
+        self.stat = []
+        self.ops = []
+        self.is_cell = []
 
         # Behavioral data. (mat)
         self.behave = None
         self.event_df = None
 
         # Image timestamps. (xml)
-        self.im_ts = None
+        self.im_ts = []
 
         # Session start and end timestamps. (csv)
         self.voltages = None
 
+    # Get suite2p generated files from s2p folders for each plane.
     def get_F(self) -> np.array:
-        if not self.F:
-            self.F = np.load(os.path.join(self.dir, "F.npy"), allow_pickle=True)
+        if len(self.F) == 0:
+            for ip in range(self.num_plane):
+                temp = []
+                temp = np.load(os.path.join(self.s2p_dir, self.plane_subfolder+str(ip), "F.npy"), allow_pickle=True)
+                self.F.append(temp)
         return self.F
 
     def get_Fneu(self) -> np.array:
-        if not self.Fneu:
-            self.Fneu = np.load(os.path.join(self.dir, "Fneu.npy"), allow_pickle=True)
+        if len(self.Fneu) == 0:
+            for ip in range(self.num_plane):
+                temp = []
+                temp = np.load(os.path.join(self.s2p_dir, self.plane_subfolder+str(ip), "Fneu.npy"), allow_pickle=True)
+                self.Fneu.append(temp)
         return self.Fneu
 
     def get_spks(self) -> np.array:
-        if not self.spks:
-            self.spks = np.load(os.path.join(self.dir, "spks.npy"), allow_pickle=True)
+        if len(self.spks) == 0:
+            for ip in range(self.num_plane):
+                temp = []
+                temp = np.load(os.path.join(self.s2p_dir, self.plane_subfolder+str(ip), "spks.npy"), allow_pickle=True)
+                self.spks.append(temp)
         return self.spks
 
     def get_stat(self) -> np.array:
-        if not self.stat:
-            self.stat = np.load(os.path.join(self.dir, "stat.npy"), allow_pickle=True)
+        if len(self.stat) == 0:
+            for ip in range(self.num_plane):
+                temp = []
+                temp = np.load(os.path.join(self.s2p_dir, self.plane_subfolder+str(ip) ,"stat.npy"), allow_pickle=True)
+                self.stat.append(temp)
         return self.stat
 
     def get_ops(self) -> np.array:
-        if not self.ops:
-            self.ops = np.load(os.path.join(self.dir, "ops.npy"), allow_pickle=True)
+        if len(self.ops) == 0:
+            for ip in range(self.num_plane):
+                temp = []
+                temp = np.load(os.path.join(self.s2p_dir, self.plane_subfolder+str(ip), "ops.npy"), allow_pickle=True)
+                self.ops.append(temp)
         return self.ops
 
     def get_is_cell(self) -> np.array:
-        if not self.is_cell:
-            self.is_cell = np.load(
-                os.path.join(self.dir, "iscell.npy"), allow_pickle=True
-            )
+        if len(self.is_cell) == 0:
+            for ip in range(self.num_plane):
+                temp = []
+                temp = np.load(os.path.join(self.s2p_dir, self.plane_subfolder+str(ip), "iscell.npy"), allow_pickle=True)
+                self.is_cell.append(temp)
         return self.is_cell
 
+
+    # Get behavioral events from mat file
     def _load_behave(self) -> None:
-        matfile = get_file_with_type(".mat", self.dir)
+        matfile = get_file_with_type(".mat", self.event_dir)
         self.behave = sio.loadmat(matfile)
 
     def get_behave(self) -> dict:
@@ -101,22 +124,49 @@ class DataLoader:
             self.event_df = pd.DataFrame(
                 data=event, columns=["Events", "Timestamp", "Reward"]
             )
-        
         return self.event_df
 
     def get_im_ts(self) -> np.array:
-        if not self.im_ts:
-            xmlfile = get_file_with_type(".xml", self.dir)
-            tree = ET.parse(xmlfile)
-            root = tree.getroot()
-            self.im_ts = np.r_[
-                [child.attrib["absoluteTime"] for child in root.iter("Frame")]
-            ].astype(float)
+        """
+        Returns tiff image time stamps from 000.xml file saved by bruker for each plane. 
+        
+        Note: Need to change the actual xml name containing time points information if it ends with something else other than 000.xml
 
+        """
+        if self.num_plane == 1:
+            if len(self.im_ts) == 0:
+                for file in os.listdir(self.file_dir):
+                    if file.endswith("000.xml"):
+                        xmlfile = self.file_dir + file
+                xmlfile = get_file_with_type(".xml", self.file_dir)
+                tree = ET.parse(xmlfile)
+                root = tree.getroot()
+                self.im_ts = np.r_[
+                    [child.attrib["absoluteTime"] for child in root.iter("Frame")]
+                ].astype(float)
+        
+        elif self.num_plane > 1:
+            if len(self.im_ts) == 0:
+                xmlfile = get_file_with_type("000.xml", self.file_dir)
+                tree = ET.parse(xmlfile)
+                root = tree.getroot()
+                for ip in range(self.num_plane):
+                    ax = []
+                    for child in root.iter('Frame'):
+                        if child.attrib['index'] == str(ip+1):
+                            ax.append(float(child.attrib['absoluteTime']))  
+                    self.im_ts.append(ax)
+   
         return self.im_ts
 
     def get_voltages(self) -> np.array:
+        """
+        Returns the voltage recording df with "Time(ms)", " TTL1", and " TTL2"
+            - TTL1 records for entire session (>3)
+            - TTL2 records when the cue is on (>3)
+
+        """
         if not self.voltages:
-            csv = get_file_with_type(".csv", self.dir)
+            csv = get_file_with_type(".csv", self.file_dir)
             self.voltages = pd.read_csv(csv)
         return self.voltages
