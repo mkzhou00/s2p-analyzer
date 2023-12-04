@@ -31,19 +31,13 @@ class DataLoader:
         Args:
             data_dir: Data directory containing all the required files.
         """
-        self.s2p_dir = data_dir + 'suite2p/'
-        self.file_dir = data_dir + 'files/'
-        self.plane_subfolder = 'plane'
-        self.event_dir = data_dir
+        self.s2p_dir = data_dir + "suite2p/"
+        self.file_dir = data_dir + "files/"
+        self.plane_subfolder = "plane"
         self.num_plane = num_planes
 
         # Suite2p output.
-        self.F = []
-        self.Fneu = []
-        self.spks = []
-        self.stat = []
-        self.ops = []
-        self.is_cell = []
+        self.F_all = []
 
         # Behavioral data. (mat)
         self.behave = None
@@ -56,58 +50,75 @@ class DataLoader:
         self.voltages = None
 
     # Get suite2p generated files from s2p folders for each plane.
-    def get_F(self) -> np.array:
-        if len(self.F) == 0:
+    def _load_F_all(self):
+        if len(self.F_all) == 0:
             for ip in range(self.num_plane):
                 temp = []
-                temp = np.load(os.path.join(self.s2p_dir, self.plane_subfolder+str(ip), "F.npy"), allow_pickle=True)
-                self.F.append(temp)
-        return self.F
+                temp = sio.loadmat(
+                    os.path.join(
+                        self.s2p_dir, self.plane_subfolder + str(ip), "Fall.mat"
+                    )
+                )
+                self.F_all.append(temp)
+        return self.F_all
+
+    def get_F(self) -> np.array:
+        if len(self.F_all) == 0:
+            self._load_F_all()
+
+        F = []
+        for plane in self.F_all:
+            F.append(plane['F'])
+        return F
 
     def get_Fneu(self) -> np.array:
-        if len(self.Fneu) == 0:
-            for ip in range(self.num_plane):
-                temp = []
-                temp = np.load(os.path.join(self.s2p_dir, self.plane_subfolder+str(ip), "Fneu.npy"), allow_pickle=True)
-                self.Fneu.append(temp)
-        return self.Fneu
+        if len(self.F_all) == 0:
+            self._load_F_all()
+
+        Fneu = []
+        for plane in self.F_all:
+            Fneu.append(plane['Fneu'])
+        return Fneu
 
     def get_spks(self) -> np.array:
-        if len(self.spks) == 0:
-            for ip in range(self.num_plane):
-                temp = []
-                temp = np.load(os.path.join(self.s2p_dir, self.plane_subfolder+str(ip), "spks.npy"), allow_pickle=True)
-                self.spks.append(temp)
-        return self.spks
+        if len(self.F_all) == 0:
+            self._load_F_all()
+
+        spks = []
+        for plane in self.F_all:
+            spks.append(plane['spks'])
+        return spks
 
     def get_stat(self) -> np.array:
-        if len(self.stat) == 0:
-            for ip in range(self.num_plane):
-                temp = []
-                temp = np.load(os.path.join(self.s2p_dir, self.plane_subfolder+str(ip) ,"stat.npy"), allow_pickle=True)
-                self.stat.append(temp)
-        return self.stat
+        if len(self.F_all) == 0:
+            self._load_F_all()
+
+        stat = []
+        for plane in self.F_all:
+            stat.append(plane['stat'])
+        return stat
 
     def get_ops(self) -> np.array:
-        if len(self.ops) == 0:
-            for ip in range(self.num_plane):
-                temp = []
-                temp = np.load(os.path.join(self.s2p_dir, self.plane_subfolder+str(ip), "ops.npy"), allow_pickle=True)
-                self.ops.append(temp)
-        return self.ops
+        if len(self.F_all) == 0:
+            self._load_F_all()
+
+        ops = []
+        for plane in self.F_all:
+            ops.append(plane['ops'])
+        return ops
 
     def get_is_cell(self) -> np.array:
-        if len(self.is_cell) == 0:
-            for ip in range(self.num_plane):
-                temp = []
-                temp = np.load(os.path.join(self.s2p_dir, self.plane_subfolder+str(ip), "iscell.npy"), allow_pickle=True)
-                self.is_cell.append(temp)
-        return self.is_cell
+        if len(self.F_all) == 0:
+            self._load_F_all()
 
+        iscell = []
+        for plane in self.F_all:
+            iscell.append(plane['iscell'])
+        return iscell
 
     # Get behavioral events from mat file
     def _load_behave(self) -> None:
-        matfile = get_file_with_type(".mat", self.event_dir)
+        matfile = get_file_with_type(".mat", self.file_dir)
         self.behave = sio.loadmat(matfile)
 
     def get_behave(self) -> dict:
@@ -128,8 +139,8 @@ class DataLoader:
 
     def get_im_ts(self) -> np.array:
         """
-        Returns tiff image time stamps from 000.xml file saved by bruker for each plane. 
-        
+        Returns tiff image time stamps from 000.xml file saved by bruker for each plane.
+
         Note: Need to change the actual xml name containing time points information if it ends with something else other than 000.xml
 
         """
@@ -144,7 +155,7 @@ class DataLoader:
                 self.im_ts = np.r_[
                     [child.attrib["absoluteTime"] for child in root.iter("Frame")]
                 ].astype(float)
-        
+
         elif self.num_plane > 1:
             if len(self.im_ts) == 0:
                 xmlfile = get_file_with_type("000.xml", self.file_dir)
@@ -152,11 +163,11 @@ class DataLoader:
                 root = tree.getroot()
                 for ip in range(self.num_plane):
                     ax = []
-                    for child in root.iter('Frame'):
-                        if child.attrib['index'] == str(ip+1):
-                            ax.append(float(child.attrib['absoluteTime']))  
+                    for child in root.iter("Frame"):
+                        if child.attrib["index"] == str(ip + 1):
+                            ax.append(float(child.attrib["absoluteTime"]))
                     self.im_ts.append(ax)
-   
+
         return self.im_ts
 
     def get_voltages(self) -> np.array:

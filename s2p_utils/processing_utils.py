@@ -2,12 +2,43 @@ import pandas as pd
 import numpy as np
 
 
+def correct_overlapping_cells_across_planes(stat,iscell):
+    cellidx = []
+    for ip in range(len(iscell)):
+        # get the index number of ROIs that is cell (1 in first item of iscell)
+        temp = (iscell[ip]==1).nonzero()[0]
+        cellidx.append(temp)
+    
+    xy_plane0 = set()
+    overlapping_cells = []
+    for icell in cellidx[0]:
+        assert len(stat[0][0][icell]['xpix'][0][0][0]) == len(stat[0][0][icell]['ypix'][0][0][0])
+        xpix = stat[0][0][icell]['xpix'][0][0][0]
+        ypix = stat[0][0][icell]['ypix'][0][0][0]
+        reference_cell_coordinates = set()
+        for ix, iy in zip(xpix, ypix):
+            reference_cell_coordinates.add((ix, iy))
+        for ic in cellidx[1]:
+            assert len(stat[1][0][ic]['xpix'][0][0][0]) == len(stat[1][0][ic]['ypix'][0][0][0])
+            x = stat[1][0][ic]['xpix'][0][0][0]
+            y = stat[1][0][ic]['ypix'][0][0][0]
+            overlap_ct = 0
+            for ix, iy in zip(x, y):
+                if (ix, iy) in reference_cell_coordinates:                 
+                    overlap_ct += 1
+            if (overlap_ct / len(x)) >= 0.8:
+                iscell[1][ic][0] = 0
+                overlapping_cells.append([icell, ic])
+
+    return overlapping_cells
+
+
 def extract_cues_from_events(event_df: pd.DataFrame) -> pd.DataFrame:
-    return event_df.loc[
+    return np.array(event_df.loc[
         (event_df["Events"] == 15)  # CS1
         | (event_df["Events"] == 16)  # CS2
         | (event_df["Events"] == 17)  # CS3
-    ]
+    ]['Timestamp'])
 
 
 def extract_cues_from_voltages(voltages: pd.DataFrame) -> pd.DataFrame:
@@ -25,7 +56,7 @@ def extract_cues_from_voltages(voltages: pd.DataFrame) -> pd.DataFrame:
     assert len(padded_diff) == len(voltages)
 
     voltages["TTL2 diff"] = padded_diff
-    return voltages.loc[voltages["TTL2 diff"] > 3]
+    return np.array(voltages.loc[voltages["TTL2 diff"] > 3]["Time(ms)"])
 
 
 def extract_cues(event_df: pd.DataFrame, voltages: pd.DataFrame):
@@ -78,7 +109,7 @@ def correct_arduino_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame):
 
     assert len(event_cues) > 0
 
-    # Averge scales at different time points.
+    ## Linear scaling across time points 
     # scale = 0
     # for e_cue, v_cue in zip(
     #     event_cues["Timestamp"].to_numpy(), voltage_cues["Time(ms)"].to_numpy()
@@ -91,35 +122,113 @@ def correct_arduino_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame):
 
     # for non linear scaling across time points, correct for each cue
     for icue, (e_cue, v_cue) in enumerate(
-        zip(event_cues["Timestamp"].to_numpy(), voltage_cues["Time(ms)"].to_numpy())
+        zip(event_cues, voltage_cues)
     ):
         if icue < (len(event_cues) - 1):
             scale = v_cue / e_cue
             idx_events_after_cue = event_df.loc[
-                (event_df["Timestamp"] >= e_cue)
-                & (event_df["Timestamp"] < (event_cues["Timestamp"].iloc[icue + 1]))
+                (event_df['Timestamp'] >= e_cue)
+                & (event_df['Timestamp'] < (event_cues[icue + 1]))
             ].index.tolist()
-            event_df["Timestamp"].loc[idx_events_after_cue] *= scale
+            event_df['Timestamp'][idx_events_after_cue] *= scale
         elif icue == (len(event_cues) - 1):
             scale = v_cue / e_cue
             idx_events_after_cue = event_df.loc[
-                (event_df["Timestamp"] >= e_cue)
+                (event_df['Timestamp'] >= e_cue)
             ].index.tolist()
-            event_df["Timestamp"].loc[idx_events_after_cue] *= scale
+            event_df['Timestamp'][idx_events_after_cue] *= scale
     new_event_cues = extract_cues_from_events(event_df)
 
     return event_cues, new_event_cues, voltage_cues
 
 
-def get_cell_only_activity(input_trace: list, is_cell: list, num_planes: int):
+def extract_events(event_df:pd.DataFrame):
+    # get all events in seconds
+    licks = np.array(event_df['Timestamp'][event_df["Events"] == 5]/1E3)
+    CS1 = np.array(event_df['Timestamp'][event_df["Events"] == 15]/1E3)
+    CS2 = np.array(event_df['Timestamp'][event_df["Events"] == 16]/1E3)
+    CS3 = np.array(event_df['Timestamp'][event_df["Events"] == 17]/1E3)
+    sucrose = np.array(event_df['Timestamp'][(event_df["Events"] == 10) & (event_df["Reward"] == 1)]/1E3)
+    milk = np.array(event_df['Timestamp'][(event_df["Events"] == 9) & (event_df["Reward"] == 1)]/1E3)
+    return licks, CS1, CS2, CS3, sucrose, milk
+
+
+def get_cell_only_activity(F: list, Fneu: list, is_cell: list, num_planes: int, threshold: int):
     """
     Returns cell only activity for traces and spikes based on is_cell, 1==cell, 0==not cell in is_cell, for each plane.
 
     """
-    trace_cell_only = []
+    F_cell = [[] for _ in range(num_planes)]
+    Fneu_cell = [[] for _ in range(num_planes)]
 
     for ip in range(num_planes):
-        cell_idx = is_cell[ip][:, 0] == 1
-        trace_cell_only.append(input_trace[ip][cell_idx, :])
+        cell_idx = [index for index, value in enumerate(is_cell[ip]) if value[0]== 1]
+        for cell in cell_idx:
+            if np.mean(F[ip][cell,:]/Fneu[ip][cell,:]) >= (1+threshold/1E3):
+                F_cell[ip].append(F[ip][cell, :])
+                Fneu_cell[ip].append(Fneu[ip][cell,:])
 
-    return trace_cell_only
+    return F_cell, Fneu_cell
+
+
+def get_corrected_F(F_cell: list, Fneu_cell: list, num_planes:int, coeff: float):
+    Fcorr = [[] for _ in range(num_planes)]
+    for ip in range(num_planes):
+        for ic, (fc,fneuc) in enumerate(zip(F_cell[ip], Fneu_cell[ip])):
+            # equation for neuro pil F correction
+            temp = fc - fneuc * coeff
+            Fcorr[ip].append(temp)
+    return Fcorr
+
+
+def extract_interest_time_intervals(event_cues, args):
+    # creat empty list to contain interest time window for each CS type 
+    interest_interval = [[] for _ in range(len(event_cues))]
+    for ct, cue_type in enumerate(event_cues):
+        for cue in cue_type:
+            interest_interval[ct].append(
+                [
+                    cue - args.pre_cue_window,
+                    cue + args.post_cue_window,
+                ]
+            )
+    return interest_interval
+
+
+def extract_imaging_ts_around_events(CS, im_ts, num_planes: int, interest_intervals):
+    im_idx_around_cues = [[[] for _ in range(len(CS))] for _ in range(num_planes)]
+    for cs_type, cs in enumerate(CS):
+        for ip in range(num_planes):
+            for interval in interest_intervals[cs_type]:
+                # find the images condition during each interval
+                condition_idx = (im_ts[ip] >= interval[0]) & (im_ts[ip] <= interval[1])
+                # get the image time points for each cue
+                cue_temp = [i for i, (ts, condition) in enumerate(zip(im_ts[0], condition_idx)) if condition]
+                # append image time points for each cue under correct CS type and plane
+                im_idx_around_cues[ip][cs_type].append(cue_temp)
+    im_idx_around_cues = np.array(im_idx_around_cues)
+    return im_idx_around_cues
+            
+
+def extract_F_around_events(CS, F, im_idx_around_cues, num_planes:int):
+    F_ave_around_cues = [[] for _ in range(len(CS))]
+
+    for cue_type, cs in enumerate(CS): # cue_type = 0,1,2 (CS1, CS2, CS3)
+        for ip in range(num_planes):
+            cue_ts = im_idx_around_cues[ip][cue_type] # image indexes for cues, holds same for all cells within the plane
+            for cell in range(len(F[ip])):
+                cell_F = []
+                for trial in range(len(cs)):
+                    F_temp = F[ip][cell][cue_ts[trial]]
+                    if trial == 0:
+                        framenumber = len(F_temp)
+                    # Correct for frame for each trial
+                    if len(F_temp) > framenumber:
+                        F_temp = F_temp[0:framenumber]
+                    elif len(F_temp) < framenumber:
+                        for i in range(framenumber - len(F_temp)):
+                            F_temp = np.append(F_temp, np.nan)
+                    cell_F.append(F_temp)
+                cellave = np.nanmean(np.array(cell_F), axis=0)
+                F_ave_around_cues[cue_type].append(cellave)
+    return F_ave_around_cues

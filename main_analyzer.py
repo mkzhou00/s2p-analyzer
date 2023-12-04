@@ -2,12 +2,24 @@ import argparse
 import logging
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import os
 
 from s2p_utils.data_loader import DataLoader
 from s2p_utils.processing_utils import (
+    correct_overlapping_cells_across_planes,
     correct_arduino_timestamps,
-    extract_cues_from_events,
     get_cell_only_activity,
+    extract_events,
+    get_corrected_F,
+    extract_interest_time_intervals,
+    extract_imaging_ts_around_events,
+    extract_F_around_events,
+)
+from plot_utils import (
+    plot_raw_licks,
+    plot_average_PSTH_around_interest_window,
+    plot_correlation_martix,
 )
 
 
@@ -22,8 +34,14 @@ def parse_args():
         "--data_dir",
         type=str,
         required=False,
-        default="/Users/mzhou/Library/CloudStorage/OneDrive-UCSF/PhD projects/analysis/sample_for_analysis/full_session/",
+        default="/Users/mzhou/Library/CloudStorage/OneDrive-UCSF/MZ_hpc_prism_M4/d15/",
         help="Directory containing all the required files.",
+    )
+    parser.add_argument(
+        "--result_folder",
+        type=str,
+        default="result/",
+        help="folder for saving figures and results",
     )
     parser.add_argument(
         "--num_planes",
@@ -38,39 +56,30 @@ def parse_args():
         help="Minimum probability to identify an ROI as a cell.",
     )
     parser.add_argument(
-        "--event_interest_time_region_before",
+        "--pre_cue_window",
         type=float,
         default=3,
         help="Interested time region before a cue starts. (Second)",
     )
     parser.add_argument(
-        "--event_interest_time_region_after",
+        "--post_cue_window",
         type=float,
-        default=3,
+        default=10,
         help="Interested time region after a cue starts. (Seoncd)",
     )
     parser.add_argument(
-        "--output_folder",
-        type=str,
-        default=".",
-        help="Output Folder.",
+        "--neucoeff",
+        type=float,
+        default=0.7,
+        help="neuropil coefficient factor",
+    )
+    parser.add_argument(
+        "--cell_threshold",
+        type=int,
+        default=3,
+        help="threshold percentage difference between F and Fneu to count as a valid cell",
     )
     return parser.parse_args()
-
-
-def extract_interest_time_intervals(event_df: pd.DataFrame, args):
-    event_cues = extract_cues_from_events(event_df)
-    interest_interval = []
-
-    for cue in event_cues["Timestamp"]:
-        cue_timestamp_s = cue / 1000  # Convert from ms to s.
-        interest_interval.append(
-            [
-                cue_timestamp_s - args.event_interest_time_region_before,
-                cue_timestamp_s + args.event_interest_time_region_after,
-            ]
-        )
-    return interest_interval
 
 
 def associate_cells_with_intervals(
@@ -97,75 +106,61 @@ def main():
 
     # Load all necessary data.
     F = data_loader.get_F()
-    # Fneu corrected by suite2p
+    Fneu = data_loader.get_Fneu()
     stat = data_loader.get_stat()
     is_cell = data_loader.get_is_cell()
-    ops = data_loader.get_ops()
-    spks = data_loader.get_spks()
+    # ops = data_loader.get_ops()
+    # spks = data_loader.get_spks()
     event_df = data_loader.get_event_df()  # Arduino
     voltages = data_loader.get_voltages()  # Computer
-    im_ts = data_loader.get_im_ts() # image time stamps in second
+    im_ts = data_loader.get_im_ts()  # image time stamps in second
+
+    if args.num_planes > 1:
+        overlapping_cells = correct_overlapping_cells_across_planes(stat, is_cell)
 
     # `event_tf` contains Arduino timestamps.
-    event_cues, new_event_cues, voltage_cues = correct_arduino_timestamps(event_df, voltages)
+    event_cues, new_event_cues, voltage_cues = correct_arduino_timestamps(
+        event_df, voltages
+    )
 
-    # Making sure they are the same size for `zip()`
+    # Make a result folder
+    result_dir = os.path.join(args.data_dir, args.result_folder)
+    if not os.path.exists(result_dir):
+        os.makedirs(result_dir)
+
+    # Get F_cell and Fneu_cell only activity
+    F_cell, Fneu_cell = get_cell_only_activity(
+        F, Fneu, is_cell, args.num_planes, args.cell_threshold
+    )
+    # Get neuropil corrected F with neuropil coefficient
+    assert len(F_cell) == len(Fneu_cell), "Fcell and Fneu cell must be the same length"
+    Fcorr = get_corrected_F(F_cell, Fneu_cell, args.num_planes, args.neucoeff)
     for ip in range(args.num_planes):
-        assert len(is_cell[ip]) == len(F[ip]) and len(F[ip]) == len(
-            stat[ip]
-        ), "F and is_cell must be of the same length."
+        assert len(F_cell[ip]) == len(Fcorr[ip])
 
-    # Extract time intervals of interest.
-    interest_interval = extract_interest_time_intervals(event_df, args)
+    # Extract all event time points from new event_df
+    [licks, CS1, CS2, CS3, sucrose, milk] = extract_events(event_df)
+    allCS = [CS1, CS2, CS3]
 
-    # Variables holding associated cell data.
-    # Key: cell index, Val: set of intervals in which this cell's activity is detected.
-    cells_active_before_cue = {}
-    cells_active_after_cue = {}
-    # Key: interval index, Val: Set of cells' index detected in the interval
-    intervals_before_cue_cells = {}
-    intervals_after_cue_cells = {}
-    F_cell_trials = {}
-    spks_cell_trials = {}
+    ## Plot behavior rasters
+    fig_rawplot = plot_raw_licks(
+        allCS, licks, args.pre_cue_window, args.post_cue_window
+    )
+    plt.close(fig_rawplot)
+    # fig_rawplot.savefig(os.path.join(result_dir, 'behavior_raster.png'), format='png')
 
+    # Extract time around each cue and sorted by CS type
+    interest_intervals = extract_interest_time_intervals(allCS, args)
+    # Extract image time points around each cue and sorted by CS type and plane
+    im_idx_around_cue = extract_imaging_ts_around_events(
+        allCS, im_ts, args.num_planes, interest_intervals
+    )
+    Fcorr_around_cue = extract_F_around_events(
+        allCS, Fcorr, im_idx_around_cue, args.num_planes
+    )
 
-    # Get traces and spikes for ROIs identified as cells
-    F_cell = get_cell_only_activity(F, is_cell, args.num_planes)
-    spks_cell = get_cell_only_activity(spks, is_cell, args.num_planes)
-
-    for ip in range(args.num_planes):
-        for ic, (F_ic, spk_ic) in enumerate(zip(F_cell[ip], spks_cell[ip])):
-            # Skip if cell probability is low.
-            # if is_cell_i[1] < args.min_cell_prob:
-            #     continue
-
-            # "F_ic is each cell's raw trace activities, spk_ic is each cell's spike activities."
-            for interval_idx, (start, end) in enumerate(interest_interval):
-                for itime, (time, activity) in enumerate(zip(im_ts[ip], F_ic, spk_ic)):
-                    if (time >= start & time <= end):
-                        F_cell_trials[ip][ic].add()
-                        
-
-                #         if i not in cells_active_before_cue[ip]:
-                #             cells_active_before_cue[ip][i] = set()  # no repeating elements
-                #         cells_active_before_cue[ip][i].add(interval_idx)
-
-
-                #         if interval_idx not in intervals_before_cue_cells[ip]:
-                #             intervals_before_cue_cells[ip][interval_idx] = set()
-                #         intervals_before_cue_cells[ip][interval_idx].add(i)
-
-                # for interval_idx, (start, end) in enumerate(
-                #     interest_interval_after_cue
-                # ):
-                #     if (time >= start and time <= end):
-                #         if i not in cells_active_after_cue[ip]:
-                #             cells_active_after_cue[ip][i] = set()
-                #         cells_active_after_cue[ip][i].add(interval_idx)
-
-                #         if interval_idx not in intervals_after_cue_cells[ip]:
-                #             intervals_after_cue_cells[ip][interval_idx] = set()
-                #         intervals_after_cue_cells[ip][interval_idx].add(i)
+    fig_calcium_PSTH = plot_average_PSTH_around_interest_window(allCS, Fcorr)
+    correlationmatrix = plot_correlation_martix(allCS, Fcorr)
 
 
 if __name__ == "__main__":
