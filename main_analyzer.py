@@ -14,6 +14,7 @@ from s2p_utils.processing_utils import (
     get_corrected_F,
     extract_interest_time_intervals,
     extract_imaging_ts_around_events,
+    normalize_signal,
     extract_F_around_events,
 )
 from plot_utils import (
@@ -34,7 +35,7 @@ def parse_args():
         "--data_dir",
         type=str,
         required=False,
-        default="/Users/mzhou/Library/CloudStorage/OneDrive-UCSF/MZ_hpc_prism_M4/d15/",
+        default="/Users/mzhou/Library/CloudStorage/OneDrive-UCSF/MZ_hpc_prism_M4/d13/",
         help="Directory containing all the required files.",
     )
     parser.add_argument(
@@ -137,6 +138,7 @@ def main():
     Fcorr = get_corrected_F(F_cell, Fneu_cell, args.num_planes, args.neucoeff)
     for ip in range(args.num_planes):
         assert len(F_cell[ip]) == len(Fcorr[ip])
+    Fcorr = normalize_signal(Fcorr, args.num_planes)
 
     # Extract all event time points from new event_df
     [licks, CS1, CS2, CS3, sucrose, milk] = extract_events(event_df)
@@ -147,7 +149,7 @@ def main():
         allCS, licks, args.pre_cue_window, args.post_cue_window
     )
     plt.close(fig_rawplot)
-    # fig_rawplot.savefig(os.path.join(result_dir, 'behavior_raster.png'), format='png')
+    fig_rawplot.savefig(os.path.join(result_dir, 'behavior_raster.png'), format='png')
 
     # Extract time around each cue and sorted by CS type
     interest_intervals = extract_interest_time_intervals(allCS, args)
@@ -155,11 +157,14 @@ def main():
     im_idx_around_cue = extract_imaging_ts_around_events(
         allCS, im_ts, args.num_planes, interest_intervals
     )
-    Fcorr_around_cue = extract_F_around_events(
-        allCS, Fcorr, im_idx_around_cue, args.num_planes
+    # Extract average Fcorr around each cue in all cuetypes for each cell
+    Fcorr_around_cue, F_ave_around_cues_baseline_subtract = extract_F_around_events(
+        allCS, Fcorr, im_idx_around_cue, args.num_planes, args.pre_cue_window
     )
 
-    fig_calcium_PSTH = plot_average_PSTH_around_interest_window(allCS, Fcorr)
+    fig_calcium_PSTH = plot_average_PSTH_around_interest_window(allCS, F_ave_around_cues_baseline_subtract)
+    fig_calcium_PSTH.savefig(os.path.join(result_dir, 'PSTH_heatmap.png'), format='png')
+    plt.close(fig_calcium_PSTH)
     correlationmatrix = plot_correlation_martix(allCS, Fcorr)
 
 
