@@ -243,19 +243,26 @@ def extract_imaging_ts_around_events(CS, im_ts, num_planes: int, interest_interv
     im_idx_around_cues = np.array(im_idx_around_cues)
     return im_idx_around_cues
 
-def normalize_signal(Fcorr, num_planes: int):
+def normalize_signal(Fcorr, num_planes: int, norm_by='median'):
     """
     This function normalizes Fcorrected traces.
 
     """
-    for ip in range(num_planes):
-        mean = np.nanmean(Fcorr[ip], axis=1)
-        std = np.std(Fcorr[ip], axis=1)
-        Fcorr[ip] = (Fcorr[ip] - mean[:,None]) / std[:,None]
+    if norm_by == 'z_score':
+        for ip in range(num_planes):
+            mean = np.nanmean(Fcorr[ip], axis=1)
+            std = np.std(Fcorr[ip], axis=1)
+            Fcorr[ip] = (Fcorr[ip] - mean[:,None]) / std[:,None]
+    elif norm_by == 'median':
+        for ip in range(num_planes):
+            median = np.median(Fcorr[ip], axis=1)
+            max = np.max(Fcorr[ip], axis=1)
+            min = np.min(Fcorr[ip], axis=1)
+            Fcorr[ip] = (Fcorr[ip] - median[:,None]) / (max[:,None] - min[:,None])
     return Fcorr
 
 
-def extract_F_around_events(CS, F, im_idx_around_cues, num_planes: int, pre_cue_window: int):
+def extract_Fave_around_events(CS, F, im_idx_around_cues, num_planes: int, pre_cue_window: int):
     """
     This function first generates Fcorrected traces around each cues based on input images indexes,
     and average Fcorr across all CS trials within the same CS type for each cell,

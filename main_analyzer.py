@@ -15,11 +15,12 @@ from s2p_utils.processing_utils import (
     extract_interest_time_intervals,
     extract_imaging_ts_around_events,
     normalize_signal,
-    extract_F_around_events,
+    extract_Fave_around_events,
 )
 from plot_utils import (
     plot_raw_licks,
     plot_average_PSTH_around_interest_window,
+    plot_individual_cells_activity,
     plot_correlation_martix,
 )
 
@@ -35,7 +36,7 @@ def parse_args():
         "--data_dir",
         type=str,
         required=False,
-        default="/Users/mzhou/Library/CloudStorage/OneDrive-UCSF/MZ_hpc_prism_M4/d13/",
+        default="/Users/mzhou/Library/CloudStorage/OneDrive-UCSF/MZ_hpc_prism_M4/d5/",
         help="Directory containing all the required files.",
     )
     parser.add_argument(
@@ -138,7 +139,7 @@ def main():
     Fcorr = get_corrected_F(F_cell, Fneu_cell, args.num_planes, args.neucoeff)
     for ip in range(args.num_planes):
         assert len(F_cell[ip]) == len(Fcorr[ip])
-    Fcorr = normalize_signal(Fcorr, args.num_planes)
+    Fcorr = normalize_signal(Fcorr, args.num_planes, 'z_score')
 
     # Extract all event time points from new event_df
     [licks, CS1, CS2, CS3, sucrose, milk] = extract_events(event_df)
@@ -158,14 +159,23 @@ def main():
         allCS, im_ts, args.num_planes, interest_intervals
     )
     # Extract average Fcorr around each cue in all cuetypes for each cell
-    Fcorr_around_cue, F_ave_around_cues_baseline_subtract = extract_F_around_events(
+    Fcorr_around_cue, Fcorr_around_cue_baseline_subtract = extract_Fave_around_events(
         allCS, Fcorr, im_idx_around_cue, args.num_planes, args.pre_cue_window
     )
+    # cells_to_plot = [1, 3, 4, 5, 6, 8, 10]
+    # for ip in range(args.num_planes):
+    #     cells = np.argsort(np.max(Fcorr[ip], axis=1))[::-1][0:10]
+    #     cells_to_plot.append(cells)
+    # plot_individual_cells_activity(Fcorr, allCS, im_idx_around_cue, cells_to_plot, args.num_planes)
 
-    fig_calcium_PSTH = plot_average_PSTH_around_interest_window(allCS, F_ave_around_cues_baseline_subtract)
-    fig_calcium_PSTH.savefig(os.path.join(result_dir, 'PSTH_heatmap.png'), format='png')
+    # fig_calcium_PSTH = plot_average_PSTH_around_interest_window(allCS, Fcorr_around_cue,'median')
+    fig_calcium_PSTH, cells_sort_by_activity = plot_average_PSTH_around_interest_window(allCS, Fcorr_around_cue_baseline_subtract)
+    fig_calcium_PSTH.savefig(os.path.join(result_dir, 'PSTH_heatmap_zscore.png'), format='png')
     plt.close(fig_calcium_PSTH)
-    correlationmatrix = plot_correlation_martix(allCS, Fcorr)
+    cells_to_plot = cells_sort_by_activity[0:int(np.floor(0.1*len(cells_sort_by_activity)))]
+    # cells_to_plot = list(range(len(Fcorr[0]),  len(Fcorr[0])+30))
+    plot_individual_cells_activity(Fcorr, allCS, im_idx_around_cue, cells_to_plot, args.num_planes, result_dir)   
+    # correlationmatrix = plot_correlation_martix(allCS, Fcorr)
 
 
 if __name__ == "__main__":

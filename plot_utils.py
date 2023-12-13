@@ -1,6 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import matplotlib.ticker as ticker
+import os
 
 sns.set_style("ticks")
 import matplotlib as mpl
@@ -82,15 +84,15 @@ def plot_average_PSTH_around_interest_window(CS: list, F_baseline_subtract):
         else:
             cs_sign = "+"
         ax = axs[cue_type]
-        cmin = np.amin(F_baseline_subtract[cue_type])
-        cmax = np.amax(F_baseline_subtract[cue_type])
+        cmin = np.amin(F_baseline_subtract[0])
+        cmax = np.amax(F_baseline_subtract[0])
         data = np.array(F_baseline_subtract[cue_type])
         sns.heatmap(
             data[sortresponse],
             ax=ax,
             cmap=plt.get_cmap("coolwarm"),
-            vmax=cmax,
-            vmin=cmin,
+            vmax=1,
+            vmin=-1,
         )
         ax.set_title(("CS" + str(cue_type + 1) + cs_sign))
         ax.grid(False)
@@ -101,10 +103,66 @@ def plot_average_PSTH_around_interest_window(CS: list, F_baseline_subtract):
         ax.set_xticks([0, 30, 60, 134])
         ax.set_xticklabels([str(int((a - 30) / 10)) for a in [0, 30, 60, 130]])
         ax.axvline(30, linestyle="--", color="k", linewidth=0.5)
+        ax.axvline(40, linestyle="--", color="k", linewidth=0.5)
         ax.axvline(60, linestyle="--", color="k", linewidth=0.5)
     fig_PSTH.tight_layout()
 
-    return fig_PSTH
+    return fig_PSTH, sortresponse
+
+
+def plot_individual_cells_activity(F, CS, im_idx_around_cues, cells_to_plot, num_planes: int, result_dir):
+        cells_per_plane = [[] for _ in range(num_planes)]
+        for cell in cells_to_plot:
+            if cell < len(F[0]):
+                cells_per_plane[0].append(cell)
+            elif (cell < (len(F[0]) + len(F[1]))) and (cell >= len(F[0])):
+                cell = cell - len(F[0])
+                cells_per_plane[1].append(cell)
+            # correct for cell number up to 4 planes
+            # elif (cell < (len(F[0]) + len(F[1]) + len(F[2]))) and (cell >= (len(F[0]) + len(F[1]))):
+            #     cell = cell - (len(F[0]) + len(F[1]))
+            #     cells_per_plane[2].append(cell)                
+            # elif (cell < (len(F[0]) + len(F[1]) + len(F[2]) + len(F[3]))) and (cell >= (len(F[0]) + len(F[1]) + len(F[2]))):
+            #     cell = cell - (len(F[0]) + len(F[1]) + len(F[2]))
+            #     cells_per_plane[3].append(cell)   
+
+        for ip in range(num_planes):
+            for cell in cells_per_plane[ip]:
+                fig_cell, axs = plt.subplots(len(CS[0]), len(CS), figsize=(10, 5))
+                for cue_type, cs in enumerate(CS):
+                    cue_ts = im_idx_around_cues[ip][cue_type]
+                    if cue_type == 0:
+                        flattened_cue_ts = [item for sublist in cue_ts for item in sublist]
+                        ymax = np.max(F[ip][cell][flattened_cue_ts])
+                        ymin = np.min(F[ip][cell][flattened_cue_ts])
+                    for trial in range(len(CS[0])):
+                        ax = axs[trial, cue_type]
+                        Ftemp = F[ip][cell][cue_ts[trial]]
+                        ax.spines["top"].set_visible(False)
+                        ax.spines["right"].set_visible(False)
+                        if cue_type != 0:
+                            ax.yaxis.set_major_locator(ticker.NullLocator())
+                        ax.spines["bottom"].set_visible(False)
+                        ax.axvline(30, linestyle="--", color="k", linewidth=0.5)
+                        ax.axvline(40, linestyle="--", color="k", linewidth=0.5)
+                        ax.axvline(60, linestyle="--", color="k", linewidth=0.5)
+                        ax.plot(Ftemp, linewidth=1, linestyle='-', color='blue')
+                        ax.set_ylim([ymin, ymax])
+                        ax.xaxis.set_major_locator(ticker.NullLocator())
+                        ax.set_yticks([round(ymin), round(ymax)])
+                        ax.set_yticklabels([round(ymin), round(ymax)],fontsize=8)
+                        if trial == (len(CS[0]) - 1):
+                            ax.spines["bottom"].set_visible(True)
+                            ax.set_xticks([0, 30, 60, 134])
+                            ax.set_xticklabels([str(int((a - 30) / 10)) for a in [0, 30, 60, 130]])
+                            ax.set_xlabel('Time from cue (s)')
+                axs[0,0].title.set_text('CS1+')
+                axs[0,1].title.set_text('CS2+')
+                axs[0,2].title.set_text('CS3-')
+                # fig_cell.tight_layout()
+                fig_cell.savefig(os.path.join(result_dir, 'PSTH'+'_plane'+str(ip+1)+'_cell'+str(cell)+'.png'), format='png')
+                plt.close(fig_cell)
+
 
 
 def plot_correlation_martix(CS, Forr):
