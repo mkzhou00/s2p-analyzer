@@ -67,7 +67,7 @@ def parse_args():
         "--post_cue_window",
         type=float,
         default=10,
-        help="Interested time region after a cue starts. (Seoncd)",
+        help="Interested time region after a cue starts. (Second)",
     )
     parser.add_argument(
         "--neucoeff",
