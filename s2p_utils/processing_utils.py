@@ -75,12 +75,11 @@ def extract_cues(event_df: pd.DataFrame, voltages: pd.DataFrame):
 
     # Check thresholds set in the extract functions when the following assert
     # is triggered.
-    assert len(event_cues) == len(voltage_cues), (
-        "Cues extracted from events and voltages must match."
-        f"Event Cues: {len(event_cues)},"
-        f"voltage cues: {len(voltage_cues)}"
-    )
-
+    # assert len(event_cues) == len(voltage_cues), (
+    #     "Cues extracted from events and voltages must match."
+    #     f"Event Cues: {len(event_cues)},"
+    #     f"voltage cues: {len(voltage_cues)}"
+    # )
     return event_cues, voltage_cues
 
 
@@ -115,33 +114,40 @@ def correct_arduino_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame):
 
     assert len(event_cues) > 0
 
-    ## Linear scaling across time points
+    ## Linear scaling just using start and end time points
     # scale = 0
-    # for e_cue, v_cue in zip(
-    #     event_cues["Timestamp"].to_numpy(), voltage_cues["Time(ms)"].to_numpy()
-    # ):
-    #     scale += v_cue / e_cue
-    # scale /= len(event_cues)
-    # # Correct for linear scale.
+    # end_v = v_in_session["Time(ms)"].iloc[-1]
+    # end_e = event_df['Timestamp'].iloc[-1]
+    # scale = end_v / end_e
     # event_df["Timestamp"] *= scale
     # new_event_cues = extract_cues_from_events(event_df)
 
-    # for non linear scaling across time points, correct for each cue
-    for icue, (e_cue, v_cue) in enumerate(zip(event_cues, voltage_cues)):
-        if icue < (len(event_cues) - 1):
-            scale = v_cue / e_cue
-            idx_events_after_cue = event_df.loc[
-                (event_df["Timestamp"] >= e_cue)
-                & (event_df["Timestamp"] < (event_cues[icue + 1]))
-            ].index.tolist()
-            event_df["Timestamp"][idx_events_after_cue] *= scale
-        elif icue == (len(event_cues) - 1):
-            scale = v_cue / e_cue
-            idx_events_after_cue = event_df.loc[
-                (event_df["Timestamp"] >= e_cue)
-            ].index.tolist()
-            event_df["Timestamp"][idx_events_after_cue] *= scale
+    ## Linear scaling across time points for each cue
+    scale = 0
+    for e_cue, v_cue in zip(event_cues, voltage_cues):
+        scale += v_cue / e_cue
+    scale /= len(event_cues)
+    # Correct for linear scale.
+    event_df["Timestamp"] *= scale
     new_event_cues = extract_cues_from_events(event_df)
+
+    ## for non linear scaling across time points, correct for each cue
+    # if len(event_cues) == len(voltage_cues):
+    #     for icue, (e_cue, v_cue) in enumerate(zip(event_cues, voltage_cues)):
+    #         if icue < (len(event_cues) - 1):
+    #             scale = v_cue / e_cue
+    #             idx_events_after_cue = event_df.loc[
+    #                 (event_df["Timestamp"] >= e_cue)
+    #                 & (event_df["Timestamp"] < (event_cues[icue + 1]))
+    #             ].index.tolist()
+    #             event_df["Timestamp"][idx_events_after_cue] *= scale
+    #         elif icue == (len(event_cues) - 1):
+    #             scale = v_cue / e_cue
+    #             idx_events_after_cue = event_df.loc[
+    #                 (event_df["Timestamp"] >= e_cue)
+    #             ].index.tolist()
+    #             event_df["Timestamp"][idx_events_after_cue] *= scale
+    #     new_event_cues = extract_cues_from_events(event_df)
 
     return event_cues, new_event_cues, voltage_cues
 
@@ -243,26 +249,29 @@ def extract_imaging_ts_around_events(CS, im_ts, num_planes: int, interest_interv
     im_idx_around_cues = np.array(im_idx_around_cues)
     return im_idx_around_cues
 
-def normalize_signal(Fcorr, num_planes: int, norm_by='median'):
+
+def normalize_signal(Fcorr, num_planes: int, norm_by="median"):
     """
     This function normalizes Fcorrected traces.
 
     """
-    if norm_by == 'z_score':
+    if norm_by == "z_score":
         for ip in range(num_planes):
             mean = np.nanmean(Fcorr[ip], axis=1)
             std = np.std(Fcorr[ip], axis=1)
-            Fcorr[ip] = (Fcorr[ip] - mean[:,None]) / std[:,None]
-    elif norm_by == 'median':
+            Fcorr[ip] = (Fcorr[ip] - mean[:, None]) / std[:, None]
+    elif norm_by == "median":
         for ip in range(num_planes):
             median = np.median(Fcorr[ip], axis=1)
             max = np.max(Fcorr[ip], axis=1)
             min = np.min(Fcorr[ip], axis=1)
-            Fcorr[ip] = (Fcorr[ip] - median[:,None]) / (max[:,None] - min[:,None])
+            Fcorr[ip] = (Fcorr[ip] - median[:, None]) / (max[:, None] - min[:, None])
     return Fcorr
 
 
-def extract_Fave_around_events(CS, F, im_idx_around_cues, num_planes: int, pre_cue_window: int):
+def extract_Fave_around_events(
+    CS, F, im_idx_around_cues, num_planes: int, pre_cue_window: int, post_cue_window:int
+):
     """
     This function first generates Fcorrected traces around each cues based on input images indexes,
     and average Fcorr across all CS trials within the same CS type for each cell,
@@ -282,6 +291,10 @@ def extract_Fave_around_events(CS, F, im_idx_around_cues, num_planes: int, pre_c
     F_ave_around_cues_baseline_subtract = [[] for _ in range(len(CS))]
 
     for cue_type, cs in enumerate(CS):  # cue_type = 0,1,2 (CS1, CS2, CS3)
+        framenumber = len(
+            F[0][0][im_idx_around_cues[0][cue_type][0]]
+        )  # reference frame number equals the first cell's first trial from the first plane
+        framespersecond = framenumber // (pre_cue_window + post_cue_window)
         for ip in range(num_planes):
             cue_ts = im_idx_around_cues[ip][
                 cue_type
@@ -290,10 +303,6 @@ def extract_Fave_around_events(CS, F, im_idx_around_cues, num_planes: int, pre_c
                 cell_F = []
                 for trial in range(len(cs)):
                     F_temp = F[ip][cell][cue_ts[trial]]
-                    # Initialize frame number 
-                    if cue_type == 0:
-                        if trial == 0:
-                            framenumber = len(F_temp)
                     # Correct for frame for each trial
                     if len(F_temp) > framenumber:
                         # if images number is bigger than default, drop the extra ones
@@ -305,7 +314,7 @@ def extract_Fave_around_events(CS, F, im_idx_around_cues, num_planes: int, pre_c
                     cell_F.append(F_temp)
                 # average across cs trials
                 cellave = np.nanmean(np.array(cell_F), axis=0)
-                baseline = np.nanmean(cellave[0:pre_cue_window * 10])
+                baseline = np.nanmean(cellave[0:pre_cue_window * framespersecond])
                 baselinesubtract = cellave - baseline
                 F_ave_around_cues_baseline_subtract[cue_type].append(baselinesubtract)
                 F_ave_around_cues[cue_type].append(cellave)

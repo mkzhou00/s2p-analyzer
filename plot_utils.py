@@ -74,19 +74,22 @@ def plot_raw_licks(CS, licks, before, after):
     return fig_rawplot
 
 
-def plot_average_PSTH_around_interest_window(CS: list, F_baseline_subtract):
+def plot_average_PSTH_around_interest_window(CS: list, F, pre_cue_window:int, post_cue_window:int, CS_to_align: int):
     fig_PSTH, axs = plt.subplots(1, len(CS), figsize=(4 * (len(CS)), 4))
-    sortresponse = np.argsort(np.mean(F_baseline_subtract[0], axis=1))[::-1]
+    sortresponse = np.argsort(np.mean(F[CS_to_align-1], axis=1))[::-1]
 
     for cue_type in range(len(CS)):
+        framenumber = len(F[cue_type][0])
+        framespersecond = framenumber / (pre_cue_window + post_cue_window)
+        xticks = np.array([0, framespersecond*pre_cue_window, framespersecond*(pre_cue_window+3), framenumber])
         if cue_type == 2:
             cs_sign = "-"
         else:
             cs_sign = "+"
         ax = axs[cue_type]
-        cmin = np.amin(F_baseline_subtract[0])
-        cmax = np.amax(F_baseline_subtract[0])
-        data = np.array(F_baseline_subtract[cue_type])
+        cmin = np.amin(F[0])
+        cmax = np.amax(F[0])
+        data = np.array(F[cue_type])
         sns.heatmap(
             data[sortresponse],
             ax=ax,
@@ -100,14 +103,14 @@ def plot_average_PSTH_around_interest_window(CS: list, F_baseline_subtract):
         ax.set_xlabel("Time from cue (s)")
         ax.set_yticks(list(range(0, data.shape[0], 100)))
         ax.set_yticklabels([str(a + 1) for a in range(0, data.shape[0], 100)])
-        ax.set_xticks([0, 30, 60, 134])
-        ax.set_xticklabels([str(int((a - 30) / 10)) for a in [0, 30, 60, 130]])
-        ax.axvline(30, linestyle="--", color="k", linewidth=0.5)
-        ax.axvline(40, linestyle="--", color="k", linewidth=0.5)
-        ax.axvline(60, linestyle="--", color="k", linewidth=0.5)
+        ax.set_xticks(xticks)
+        ax.set_xticklabels([str(int(np.round((a - xticks[1]) / framespersecond))) for a in xticks])
+        ax.axvline(framespersecond*pre_cue_window, linestyle="--", color="k", linewidth=0.5)
+        ax.axvline(framespersecond*(pre_cue_window+1), linestyle="--", color="k", linewidth=0.5)
+        ax.axvline(framespersecond*(pre_cue_window+3), linestyle="--", color="k", linewidth=0.5)
     fig_PSTH.tight_layout()
 
-    return fig_PSTH, sortresponse
+    return fig_PSTH, [sortresponse[0:100],sortresponse[-100:]]
 
 
 def plot_individual_cells_activity(F, CS, im_idx_around_cues, cells_to_plot, num_planes: int, result_dir):
@@ -153,8 +156,8 @@ def plot_individual_cells_activity(F, CS, im_idx_around_cues, cells_to_plot, num
                         ax.set_yticklabels([round(ymin), round(ymax)],fontsize=8)
                         if trial == (len(CS[0]) - 1):
                             ax.spines["bottom"].set_visible(True)
-                            ax.set_xticks([0, 30, 60, 134])
-                            ax.set_xticklabels([str(int((a - 30) / 10)) for a in [0, 30, 60, 130]])
+                            ax.set_xticks([0, 30, 60, 120])
+                            ax.set_xticklabels([str(int((a - 30) / 10)) for a in [0, 30, 60, 120]])
                             ax.set_xlabel('Time from cue (s)')
                 axs[0,0].title.set_text('CS1+')
                 axs[0,1].title.set_text('CS2+')

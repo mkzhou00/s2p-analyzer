@@ -31,8 +31,8 @@ class DataLoader:
         Args:
             data_dir: Data directory containing all the required files.
         """
-        self.s2p_dir = data_dir + "suite2p/"
-        self.file_dir = data_dir + "files/"
+        self.s2p_dir = os.path.join(data_dir, "suite2p")
+        self.file_dir = os.path.join(data_dir, "files")
         self.plane_subfolder = "plane"
         self.num_plane = num_planes
 
