@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-
+import scipy.stats as stats
 
 def correct_overlapping_cells_across_planes(stat, iscell):
     cellidx = []
@@ -111,25 +111,25 @@ def correct_arduino_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame):
 
     # Now that both data starts at 0, correct the linear drift based on event cues.
     event_cues, voltage_cues = extract_cues(event_df, voltages)
-
     assert len(event_cues) > 0
 
-    ## Linear scaling just using start and end time points
-    # scale = 0
-    # end_v = v_in_session["Time(ms)"].iloc[-1]
-    # end_e = event_df['Timestamp'].iloc[-1]
-    # scale = end_v / end_e
-    # event_df["Timestamp"] *= scale
-    # new_event_cues = extract_cues_from_events(event_df)
-
-    ## Linear scaling across time points for each cue
-    scale = 0
-    for e_cue, v_cue in zip(event_cues, voltage_cues):
-        scale += v_cue / e_cue
-    scale /= len(event_cues)
-    # Correct for linear scale.
-    event_df["Timestamp"] *= scale
-    new_event_cues = extract_cues_from_events(event_df)
+    if len(voltage_cues) > 0:
+        ## Linear scaling across time points for each cue, with accurate TTL2 signal
+        scale = 0
+        for e_cue, v_cue in zip(event_cues, voltage_cues):
+            scale += v_cue / e_cue
+        scale /= len(event_cues)
+        # Correct for linear scale.
+        event_df["Timestamp"] *= scale
+        # new_event_cues = extract_cues_from_events(event_df)
+    else:
+        ## Linear scaling just using start and end time points, this is for when TTL2 is not working well
+        scale = 0
+        end_v = v_in_session["Time(ms)"].iloc[-1]
+        end_e = event_df["Timestamp"].iloc[-1]
+        scale = end_v / end_e
+        event_df["Timestamp"] *= scale
+        # new_event_cues = extract_cues_from_events(event_df)
 
     ## for non linear scaling across time points, correct for each cue
     # if len(event_cues) == len(voltage_cues):
@@ -148,8 +148,6 @@ def correct_arduino_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame):
     #             ].index.tolist()
     #             event_df["Timestamp"][idx_events_after_cue] *= scale
     #     new_event_cues = extract_cues_from_events(event_df)
-
-    return event_cues, new_event_cues, voltage_cues
 
 
 def extract_events(event_df: pd.DataFrame):
@@ -192,9 +190,9 @@ def get_cell_only_activity(
 def get_corrected_F(F_cell: list, Fneu_cell: list, num_planes: int, coeff: float):
     Fcorr = [[] for _ in range(num_planes)]
     for ip in range(num_planes):
-        for ic, (fc, fneuc) in enumerate(zip(F_cell[ip], Fneu_cell[ip])):
+        for ic, (fc, fneu) in enumerate(zip(F_cell[ip], Fneu_cell[ip])):
             # equation for neuro pil F correction
-            temp = fc - fneuc * coeff
+            temp = fc - fneu * coeff
             Fcorr[ip].append(temp)
     return Fcorr
 
@@ -266,11 +264,21 @@ def normalize_signal(Fcorr, num_planes: int, norm_by="median"):
             max = np.max(Fcorr[ip], axis=1)
             min = np.min(Fcorr[ip], axis=1)
             Fcorr[ip] = (Fcorr[ip] - median[:, None]) / (max[:, None] - min[:, None])
+    elif norm_by == "robust_z_score":
+        for ip in range(num_planes):
+            median = np.median(Fcorr[ip], axis=1)
+            mad = stats.median_absolute_deviation(Fcorr[ip], axis=1)
+            Fcorr= 0.6745*(Fcorr[ip] - median[:, None]) / np.median(mad)
     return Fcorr
 
 
 def extract_Fave_around_events(
-    CS, F, im_idx_around_cues, num_planes: int, pre_cue_window: int, post_cue_window:int
+    CS,
+    F,
+    im_idx_around_cues,
+    num_planes: int,
+    pre_cue_window: int,
+    post_cue_window: int,
 ):
     """
     This function first generates Fcorrected traces around each cues based on input images indexes,
@@ -287,22 +295,25 @@ def extract_Fave_around_events(
     Fcorrected_around_cue with the structure of len(CS) x number of cells
 
     """
-    F_ave_around_cues = [[] for _ in range(len(CS))]
+    # F_ave_around_cues = [[] for _ in range(len(CS))]
     F_ave_around_cues_baseline_subtract = [[] for _ in range(len(CS))]
 
+    framenumber = len(
+        F[0][0][im_idx_around_cues[0][0][1]]
+    )  # reference frame number equals the first cell's second trial from the first plane
+    framespersecond = framenumber // (pre_cue_window + post_cue_window)
+    
     for cue_type, cs in enumerate(CS):  # cue_type = 0,1,2 (CS1, CS2, CS3)
-        framenumber = len(
-            F[0][0][im_idx_around_cues[0][cue_type][0]]
-        )  # reference frame number equals the first cell's first trial from the first plane
-        framespersecond = framenumber // (pre_cue_window + post_cue_window)
         for ip in range(num_planes):
             cue_ts = im_idx_around_cues[ip][
                 cue_type
-            ]  # image indexes for cues, holds same for all cells within the plane
+            ]  # image indexes for all trials in this cue type, holds same for all cells within the plane (trial number x framenumber)
             for cell in range(len(F[ip])):
                 cell_F = []
                 for trial in range(len(cs)):
-                    F_temp = F[ip][cell][cue_ts[trial]]
+                    F_temp = F[ip][cell][
+                        cue_ts[trial]
+                    ]  # F for cell in the plane, of this trial in this cue type (framenumber x )
                     # Correct for frame for each trial
                     if len(F_temp) > framenumber:
                         # if images number is bigger than default, drop the extra ones
@@ -314,8 +325,9 @@ def extract_Fave_around_events(
                     cell_F.append(F_temp)
                 # average across cs trials
                 cellave = np.nanmean(np.array(cell_F), axis=0)
-                baseline = np.nanmean(cellave[0:pre_cue_window * framespersecond])
-                baselinesubtract = cellave - baseline
+                baseline = np.nanmean(cellave[0 : pre_cue_window * framespersecond])
+                baselinesubtract = list(cellave - baseline)
                 F_ave_around_cues_baseline_subtract[cue_type].append(baselinesubtract)
-                F_ave_around_cues[cue_type].append(cellave)
-    return F_ave_around_cues, F_ave_around_cues_baseline_subtract
+                # F_ave_around_cues[cue_type].append(cellave)
+    F_ave_around_cues_baseline_subtract = np.array(F_ave_around_cues_baseline_subtract)
+    return F_ave_around_cues_baseline_subtract

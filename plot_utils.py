@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib.ticker as ticker
 import os
+from sklearn.metrics import accuracy_score, silhouette_score, adjusted_rand_score, silhouette_samples
 
 sns.set_style("ticks")
 import matplotlib as mpl
@@ -70,140 +71,49 @@ def plot_raw_licks(CS, licks, before, after):
                 )
                 a.set_xlabel("Time (s)")
                 a.set_title(("CS" + str(cs_type + 1) + cs_sign))
-        ax[0].set_ylabel("Trials")
+        a.set_ylim((len(cs), 0))
+    ax[0].set_ylabel("Trials")
     return fig_rawplot
 
 
-def plot_average_PSTH_around_interest_window(CS: list, F, pre_cue_window:int, post_cue_window:int, CS_to_align: int):
-    fig_PSTH, axs = plt.subplots(1, len(CS), figsize=(4 * (len(CS)), 4))
-    sortresponse = np.argsort(np.mean(F[CS_to_align-1], axis=1))[::-1]
+def plot_average_PSTH_around_interest_window(
+    CStrials: list,
+    F,
+    window_size,
+    pre_window_size,
+    frames_to_reward,
+    sortwindow,
+    framerate,
+):
+    fig_PSTH, axs = plt.subplots(
+        1,
+        len(CStrials),
+        figsize=(3 * len(CStrials), 4),
+        sharex="all",
+        sharey="row",
+    )
+    cbar_ax = fig_PSTH.add_axes([0.91, 0.3, 0.01, 0.4])
+    cbar_ax.tick_params(width=0.5)
 
-    for cue_type in range(len(CS)):
-        framenumber = len(F[cue_type][0])
-        framespersecond = framenumber / (pre_cue_window + post_cue_window)
-        xticks = np.array([0, framespersecond*pre_cue_window, framespersecond*(pre_cue_window+3), framenumber])
-        if cue_type == 2:
-            cs_sign = "-"
-        else:
-            cs_sign = "+"
+    sortresponse = np.argsort(np.mean(F[:, sortwindow[0] : sortwindow[1]], axis=1))[
+        ::-1
+    ]
+
+    for cue_type in range(len(CStrials)):
+        axs[cue_type].set_title(CStrials[cue_type])
         ax = axs[cue_type]
-        cmin = np.amin(F[0])
-        cmax = np.amax(F[0])
-        data = np.array(F[cue_type])
         sns.heatmap(
-            data[sortresponse],
+            F[sortresponse, cue_type * window_size : (cue_type + 1) * window_size],
             ax=ax,
             cmap=plt.get_cmap("coolwarm"),
-            vmax=1,
-            vmin=-1,
+            vmax=0.1,
+            vmin=-0.1,
+            cbar=(cue_type == 0),
+            cbar_ax=cbar_ax if (cue_type == 0) else None,
+            cbar_kws={"label": "Normalized fluorescence"},
         )
-        ax.set_title(("CS" + str(cue_type + 1) + cs_sign))
         ax.grid(False)
-        ax.set_ylabel("Neurons")
-        ax.set_xlabel("Time from cue (s)")
-        ax.set_yticks(list(range(0, data.shape[0], 100)))
-        ax.set_yticklabels([str(a + 1) for a in range(0, data.shape[0], 100)])
-        ax.set_xticks(xticks)
-        ax.set_xticklabels([str(int(np.round((a - xticks[1]) / framespersecond))) for a in xticks])
-        ax.axvline(framespersecond*pre_cue_window, linestyle="--", color="k", linewidth=0.5)
-        ax.axvline(framespersecond*(pre_cue_window+1), linestyle="--", color="k", linewidth=0.5)
-        ax.axvline(framespersecond*(pre_cue_window+3), linestyle="--", color="k", linewidth=0.5)
-    fig_PSTH.tight_layout()
-
-    return fig_PSTH, [sortresponse[0:100],sortresponse[-100:]]
-
-
-def plot_individual_cells_activity(F, CS, im_idx_around_cues, cells_to_plot, num_planes: int, result_dir):
-        cells_per_plane = [[] for _ in range(num_planes)]
-        for cell in cells_to_plot:
-            if cell < len(F[0]):
-                cells_per_plane[0].append(cell)
-            elif (cell < (len(F[0]) + len(F[1]))) and (cell >= len(F[0])):
-                cell = cell - len(F[0])
-                cells_per_plane[1].append(cell)
-            # correct for cell number up to 4 planes
-            # elif (cell < (len(F[0]) + len(F[1]) + len(F[2]))) and (cell >= (len(F[0]) + len(F[1]))):
-            #     cell = cell - (len(F[0]) + len(F[1]))
-            #     cells_per_plane[2].append(cell)                
-            # elif (cell < (len(F[0]) + len(F[1]) + len(F[2]) + len(F[3]))) and (cell >= (len(F[0]) + len(F[1]) + len(F[2]))):
-            #     cell = cell - (len(F[0]) + len(F[1]) + len(F[2]))
-            #     cells_per_plane[3].append(cell)   
-
-        for ip in range(num_planes):
-            for cell in cells_per_plane[ip]:
-                fig_cell, axs = plt.subplots(len(CS[0]), len(CS), figsize=(10, 5))
-                for cue_type, cs in enumerate(CS):
-                    cue_ts = im_idx_around_cues[ip][cue_type]
-                    if cue_type == 0:
-                        flattened_cue_ts = [item for sublist in cue_ts for item in sublist]
-                        ymax = np.max(F[ip][cell][flattened_cue_ts])
-                        ymin = np.min(F[ip][cell][flattened_cue_ts])
-                    for trial in range(len(CS[0])):
-                        ax = axs[trial, cue_type]
-                        Ftemp = F[ip][cell][cue_ts[trial]]
-                        ax.spines["top"].set_visible(False)
-                        ax.spines["right"].set_visible(False)
-                        if cue_type != 0:
-                            ax.yaxis.set_major_locator(ticker.NullLocator())
-                        ax.spines["bottom"].set_visible(False)
-                        ax.axvline(30, linestyle="--", color="k", linewidth=0.5)
-                        ax.axvline(40, linestyle="--", color="k", linewidth=0.5)
-                        ax.axvline(60, linestyle="--", color="k", linewidth=0.5)
-                        ax.plot(Ftemp, linewidth=1, linestyle='-', color='blue')
-                        ax.set_ylim([ymin, ymax])
-                        ax.xaxis.set_major_locator(ticker.NullLocator())
-                        ax.set_yticks([round(ymin), round(ymax)])
-                        ax.set_yticklabels([round(ymin), round(ymax)],fontsize=8)
-                        if trial == (len(CS[0]) - 1):
-                            ax.spines["bottom"].set_visible(True)
-                            ax.set_xticks([0, 30, 60, 120])
-                            ax.set_xticklabels([str(int((a - 30) / 10)) for a in [0, 30, 60, 120]])
-                            ax.set_xlabel('Time from cue (s)')
-                axs[0,0].title.set_text('CS1+')
-                axs[0,1].title.set_text('CS2+')
-                axs[0,2].title.set_text('CS3-')
-                # fig_cell.tight_layout()
-                fig_cell.savefig(os.path.join(result_dir, 'PSTH'+'_plane'+str(ip+1)+'_cell'+str(cell)+'.png'), format='png')
-                plt.close(fig_cell)
-
-
-
-def plot_correlation_martix(CS, Forr):
-    sortresponse = np.argsort(
-        np.mean(cs[:, pre_window_size : pre_window_size + frames_to_reward], axis=1)
-    )[::-1]
-    fig, axs = plt.subplots(1, 2, figsize=(8, 4))
-
-
-def plot_average_PSTH_around_event(
-    cs,
-    framenumberforevent,
-    framerate,
-    frames_to_reward,
-    savedir,
-    window_size=30,
-    pre_window_size=10,
-    trialsofinterest=None,
-    sortby="response",
-    eventname="first lick after unpredicted reward",
-    centraltendency="baseline subtracted mean",
-):
-    sortresponse = np.argsort(
-        np.mean(cs[:, pre_window_size : pre_window_size + frames_to_reward], axis=1)
-    )[::-1]
-    fig, axs = plt.subplots(1, 2, figsize=(8, 4))
-    ax = axs[0]
-    sns.heatmap(
-        cs[sortresponse, :], ax=ax, cmap=plt.get_cmap("coolwarm"), vmax=0.1, vmin=-0.1
-    )
-    ax.set_title("CS+")
-
-    for ax in axs:
-        ax.grid(False)
-        ax.set_ylabel("Neurons")
-        ax.set_xlabel("Time from cue (s)")
-        ax.set_yticks(list(range(0, populationdata.shape[0], 500)))
-        ax.set_yticklabels([str(a + 1) for a in range(0, populationdata.shape[0], 500)])
+        ax.tick_params(width=0.5)
         ax.set_xticks(
             [0, pre_window_size, pre_window_size + frames_to_reward, window_size]
         )
@@ -218,8 +128,298 @@ def plot_average_PSTH_around_event(
                 ]
             ]
         )
+        ax.set_yticks([])
         ax.axvline(pre_window_size, linestyle="--", color="k", linewidth=0.5)
         ax.axvline(
             pre_window_size + frames_to_reward, linestyle="--", color="k", linewidth=0.5
         )
+        ax.set_xlabel("Time from cue (s)")
+        axs[0].set_ylabel("Neurons")
+
+        fig_PSTH.tight_layout()
+        fig_PSTH.subplots_adjust(right=0.90)
+
+    return fig_PSTH
+
+
+def plot_individual_cells_activity(
+    F, CS, im_idx_around_cues, cells_to_plot, num_planes: int, result_dir
+):
+    cells_per_plane = [[] for _ in range(num_planes)]
+    for cell in cells_to_plot:
+        if cell < len(F[0]):
+            cells_per_plane[0].append(cell)
+        elif (cell < (len(F[0]) + len(F[1]))) and (cell >= len(F[0])):
+            cell = cell - len(F[0])
+            cells_per_plane[1].append(cell)
+        # correct for cell number up to 4 planes
+        # elif (cell < (len(F[0]) + len(F[1]) + len(F[2]))) and (cell >= (len(F[0]) + len(F[1]))):
+        #     cell = cell - (len(F[0]) + len(F[1]))
+        #     cells_per_plane[2].append(cell)
+        # elif (cell < (len(F[0]) + len(F[1]) + len(F[2]) + len(F[3]))) and (cell >= (len(F[0]) + len(F[1]) + len(F[2]))):
+        #     cell = cell - (len(F[0]) + len(F[1]) + len(F[2]))
+        #     cells_per_plane[3].append(cell)
+
+    for ip in range(num_planes):
+        for cell in cells_per_plane[ip]:
+            fig_cell, axs = plt.subplots(len(CS[0]), len(CS), figsize=(10, 5))
+            for cue_type, cs in enumerate(CS):
+                cue_ts = im_idx_around_cues[ip][cue_type]
+                if cue_type == 0:
+                    flattened_cue_ts = [item for sublist in cue_ts for item in sublist]
+                    ymax = np.max(F[ip][cell][flattened_cue_ts])
+                    ymin = np.min(F[ip][cell][flattened_cue_ts])
+                for trial in range(len(CS[0])):
+                    ax = axs[trial, cue_type]
+                    Ftemp = F[ip][cell][cue_ts[trial]]
+                    ax.spines["top"].set_visible(False)
+                    ax.spines["right"].set_visible(False)
+                    if cue_type != 0:
+                        ax.yaxis.set_major_locator(ticker.NullLocator())
+                    ax.spines["bottom"].set_visible(False)
+                    ax.axvline(30, linestyle="--", color="k", linewidth=0.5)
+                    ax.axvline(40, linestyle="--", color="k", linewidth=0.5)
+                    ax.axvline(60, linestyle="--", color="k", linewidth=0.5)
+                    ax.plot(Ftemp, linewidth=1, linestyle="-", color="blue")
+                    ax.set_ylim([ymin, ymax])
+                    ax.xaxis.set_major_locator(ticker.NullLocator())
+                    ax.set_yticks([round(ymin), round(ymax)])
+                    ax.set_yticklabels([round(ymin), round(ymax)], fontsize=8)
+                    if trial == (len(CS[0]) - 1):
+                        ax.spines["bottom"].set_visible(True)
+                        ax.set_xticks([0, 30, 60, 120])
+                        ax.set_xticklabels(
+                            [str(int((a - 30) / 10)) for a in [0, 30, 60, 120]]
+                        )
+                        ax.set_xlabel("Time from cue (s)")
+            axs[0, 0].title.set_text("CS1+")
+            axs[0, 1].title.set_text("CS2+")
+            axs[0, 2].title.set_text("CS3-")
+            # fig_cell.tight_layout()
+            fig_cell.savefig(
+                os.path.join(
+                    result_dir,
+                    "PSTH" + "_plane" + str(ip + 1) + "_cell" + str(cell) + ".png",
+                ),
+                format="png",
+            )
+            plt.close(fig_cell)
+
+def plot_PC_screenplot(
+    pca,
+    num_retained_pcs
+):
+
+
+    fig, ax = plt.subplots(figsize=(2, 2))
+    ax.plot(np.arange(pca.explained_variance_ratio_.shape[0]).astype(int) + 1, x, "k")
+    ax.set_ylabel("Percentage of\nvariance explained")
+    ax.set_xlabel("PC number")
+    ax.axvline(num_retained_pcs, linestyle="--", color="k", linewidth=0.5)
+    ax.set_title("Scree plot")
+    # ax.set_xlim([0,50])
+    [i.set_linewidth(0.5) for i in ax.spines.values()]
+    ax.spines["right"].set_visible(False)
+    ax.spines["top"].set_visible(False)
+
+    fig.subplots_adjust(left=0.3)
+    fig.subplots_adjust(right=0.98)
+    fig.subplots_adjust(bottom=0.25)
+    fig.subplots_adjust(top=0.9)
+    
+    return fig
+
+
+def plot_PCs(
+    pca_vectors,
+    num_retained_pcs,
+    trial_types,
+    window_size,
+    pre_window_size,
+    frames_to_reward,
+    framerate,
+):
+
+    colors_for_key = {}
+    colors_for_key["CS1+"] = (0, 0.5, 1)
+    colors_for_key["CS2+"] = (1, 0.5, 0)
+    colors_for_key["CS3-"] = (0.8, 0.8, 0.8)
+
+    numcols = 3.0
+    fig, axs = plt.subplots(
+        int(np.ceil(num_retained_pcs / numcols)),
+        int(numcols),
+        sharey="all",
+        figsize=(2 * numcols, 2 * int(np.ceil(num_retained_pcs / numcols))),
+    )
+    for pc in range(num_retained_pcs):
+        ax = axs.flat[pc]
+        for k, tempkey in enumerate(trial_types):
+            ax.plot(
+                pca_vectors[pc, k * window_size : (k + 1) * window_size],
+                color=colors_for_key[tempkey],
+                label="PC %d: %s" % (pc + 1, tempkey),
+            )
+        ax.axvline(pre_window_size, linestyle="--", color="k", linewidth=1)
+        ax.annotate(
+            s="PC %d" % (pc + 1),
+            xy=(0.45, 0.06),
+            xytext=(0.45, 0.06),
+            xycoords="axes fraction",
+            textcoords="axes fraction",
+            multialignment="center",
+            size="large",
+        )
+        if pc >= num_retained_pcs - numcols:
+            ax.set_xticks(
+                [0, pre_window_size, pre_window_size + frames_to_reward, window_size]
+            )
+            ax.set_xticklabels(
+                [
+                    str(int((a - pre_window_size + 0.0) / framerate))
+                    for a in [
+                        0,
+                        pre_window_size,
+                        pre_window_size + frames_to_reward,
+                        window_size,
+                    ]
+                ]
+            )
+        else:
+            ax.set_xticks([])
+            ax.xaxis.set_ticks_position("none")
+        if pc % numcols:
+            ax.yaxis.set_ticks_position("none")
+        [i.set_linewidth(0.5) for i in ax.spines.values()]
+        ax.spines["right"].set_visible(False)
+        ax.spines["top"].set_visible(False)
+
+    fig.text(
+        0.5,
+        0.05,
+        "Time from cue (s)",
+        horizontalalignment="center",
+        rotation="horizontal",
+    )
+    fig.text(0.02, 0.6, "PCA weights", verticalalignment="center", rotation="vertical")
     fig.tight_layout()
+    for ax in axs.flat[num_retained_pcs:]:
+        ax.set_visible(False)
+
+    fig.subplots_adjust(wspace=0.08, hspace=0.08)
+    fig.subplots_adjust(bottom=0.13)
+    return fig
+
+
+def make_silhouette_plot(X, cluster_labels):
+    colors_for_cluster = [[0.933, 0.250, 0.211],
+                        [0.941, 0.352, 0.156],
+                        [0.964, 0.572, 0.117],
+                        [0.980, 0.686, 0.250],
+                        [0.545, 0.772, 0.247],
+                        [0.215, 0.701, 0.290],
+                        [0, 0.576, 0.270],
+                        [0, 0.650, 0.611],
+                        [0.145, 0.662, 0.878],
+                        [0.604, 0.055, 0.918]]
+        
+    n_clusters = len(set(cluster_labels))
+    
+    fig_silhouette, ax = plt.subplots(1, 1)
+    fig_silhouette.set_size_inches(4, 4)
+
+    # The 1st subplot is the silhouette plot
+    # The silhouette coefficient can range from -1, 1 but in this example all
+    # lie within [-0.1, 1]
+    ax.set_xlim([-0.4, 1])
+    # The (n_clusters+1)*10 is for inserting blank space between silhouette
+    # plots of individual clusters, to demarcate them clearly.
+    ax.set_ylim([0, len(X) + (n_clusters + 1) * 10])
+    silhouette_avg = silhouette_score(X, cluster_labels, metric='cosine')
+
+    # Compute the silhouette scores for each sample
+    sample_silhouette_values = silhouette_samples(X, cluster_labels, metric='cosine')
+
+    y_lower = 10
+    for i in range(n_clusters):
+        # Aggregate the silhouette scores for samples belonging to
+        # cluster i, and sort them
+        ith_cluster_silhouette_values = \
+            sample_silhouette_values[cluster_labels == i]
+
+        ith_cluster_silhouette_values.sort()
+
+        size_cluster_i = ith_cluster_silhouette_values.shape[0]
+        y_upper = y_lower + size_cluster_i
+
+        color = colors_for_cluster[i]
+        ax.fill_betweenx(np.arange(y_lower, y_upper),
+                        0, ith_cluster_silhouette_values,
+                        facecolor=color, edgecolor=color, alpha=0.9)
+
+        # Label the silhouette plots with their cluster numbers at the middle
+        ax.text(-0.05, y_lower + 0.5 * size_cluster_i, str(i+1))
+
+        # Compute the new y_lower for next plot
+        y_lower = y_upper + 10  # 10 for the 0 samples
+
+        ax.set_title("The silhouette plot for the various clusters.")
+        ax.set_xlabel("The silhouette coefficient values")
+        ax.set_ylabel("Cluster label")
+
+        # The vertical line for average silhouette score of all the values
+        ax.axvline(x=silhouette_avg, color="red", linestyle="--")
+
+        ax.set_yticks([])  # Clear the yaxis labels / ticks
+        ax.set_xticks([-0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8, 1])  
+    return fig_silhouette
+
+
+def plot_activity_clusters(populationdata, uniquelabels, newlabels, trial_types, sortwindow, window_size, pre_window_size, frames_to_reward, framerate):
+    fig_activity_cluster, axs = plt.subplots(len(trial_types),len(uniquelabels),
+                            figsize=(2*len(uniquelabels),2*len(trial_types)))
+    cbar_ax = fig_activity_cluster.add_axes([.94, .3, .01, .4])
+    cbar_ax.tick_params(width=0.5) 
+
+    numroisincluster = np.nan*np.ones((len(uniquelabels),))
+
+    for c, cluster in enumerate(uniquelabels):
+        for k, tempkey in enumerate(trial_types):
+            temp = populationdata[np.where(newlabels==cluster)[0], k*window_size:(k+1)*window_size]
+            numroisincluster[c] = temp.shape[0]
+            sortresponse = np.argsort(np.mean(temp[:,sortwindow[0]:sortwindow[1]], axis=1))[::-1]
+            sns.heatmap(temp[sortresponse],
+                        ax=axs[k, cluster],
+                        cmap=plt.get_cmap('coolwarm'),
+                        vmin=-.1,
+                        vmax=.1,
+                        cbar=(cluster==0),
+                        cbar_ax=cbar_ax if (cluster==0) else None,
+                        cbar_kws={'label': 'Normalized fluorescence'})
+            axs[k, cluster].grid(False)
+            if k==len(trial_types)-1:
+                axs[k, cluster].set_xticks([0, pre_window_size,
+                                            pre_window_size + frames_to_reward, window_size])
+            else:
+                axs[k, cluster].set_xticks([])
+            axs[k, cluster].tick_params(width=0.5)    
+            axs[k, cluster].set_xticklabels([str(int((a-pre_window_size+0.0)/framerate))
+                                            for a in [0, pre_window_size,
+                                                    pre_window_size + frames_to_reward, window_size]])
+            axs[k, cluster].set_yticks([])
+            axs[k, cluster].axvline(pre_window_size, linestyle='--', color='k', linewidth=0.5)
+            axs[k, cluster].axvline(pre_window_size + frames_to_reward, linestyle='--', color='k', linewidth=0.5)
+            if cluster==0:
+                axs[k, 0].set_ylabel('%s\nNeurons'%(tempkey))
+        axs[0, cluster].set_title('Cluster %d\n(n=%d)'%(cluster+1, numroisincluster[c]))
+        
+    fig_activity_cluster.text(0.5, 0.05, 'Time from cue (s)', fontsize=12,
+            horizontalalignment='center', verticalalignment='center', rotation='horizontal')
+    fig_activity_cluster.tight_layout()
+
+    fig_activity_cluster.subplots_adjust(wspace=0.1, hspace=0.1)
+    fig_activity_cluster.subplots_adjust(left=0.03)
+    fig_activity_cluster.subplots_adjust(right=0.93)
+    fig_activity_cluster.subplots_adjust(bottom=0.1)
+    fig_activity_cluster.subplots_adjust(top=0.83)
+    return fig_activity_cluster
