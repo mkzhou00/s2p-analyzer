@@ -331,3 +331,20 @@ def extract_Fave_around_events(
                 # F_ave_around_cues[cue_type].append(cellave)
     F_ave_around_cues_baseline_subtract = np.array(F_ave_around_cues_baseline_subtract)
     return F_ave_around_cues_baseline_subtract
+
+
+def reorder_clusters(populationdata, pre_window_size, rawlabels):
+    uniquelabels = list(set(rawlabels))
+    responses = np.nan * np.ones((len(uniquelabels),))
+    for l, label in enumerate(uniquelabels):
+        responses[l] = np.mean(
+            populationdata[
+                rawlabels == label, pre_window_size : 2 * pre_window_size
+            ]
+        )
+    temp = np.argsort(responses).astype(int)[::-1]
+    temp = np.array([np.where(temp == a)[0][0] for a in uniquelabels])
+    outputlabels = np.array(
+        [temp[a] for a in list(np.digitize(rawlabels, uniquelabels) - 1)]
+    )
+    return outputlabels

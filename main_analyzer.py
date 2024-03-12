@@ -22,17 +22,29 @@ import pickle
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC, SVR, LinearSVC
-from sklearn.metrics import accuracy_score, silhouette_score, adjusted_rand_score, silhouette_samples
+from sklearn.metrics import (
+    accuracy_score,
+    silhouette_score,
+    adjusted_rand_score,
+    silhouette_samples,
+)
 from sklearn.cluster import AgglomerativeClustering, SpectralClustering, KMeans
 from sklearn.model_selection import KFold, LeaveOneOut, train_test_split
 from sklearn.model_selection import GridSearchCV
 from sklearn.kernel_ridge import KernelRidge
 from sklearn import linear_model
-from sklearn.manifold import TSNE
 import scipy.stats as stats
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
-from patsy import (ModelDesc, EvalEnvironment, Term, EvalFactor, LookupFactor, dmatrices, INTERCEPT)
+from patsy import (
+    ModelDesc,
+    EvalEnvironment,
+    Term,
+    EvalFactor,
+    LookupFactor,
+    dmatrices,
+    INTERCEPT,
+)
 from statsmodels.distributions.empirical_distribution import ECDF
 import matplotlib.cm as cm
 import matplotlib.colors as colors
@@ -50,6 +62,7 @@ from s2p_utils.processing_utils import (
     extract_imaging_ts_around_events,
     normalize_signal,
     extract_Fave_around_events,
+    reorder_clusters,
 )
 from plot_utils import (
     plot_raw_licks,
@@ -58,7 +71,8 @@ from plot_utils import (
     plot_PC_screenplot,
     plot_PCs,
     make_silhouette_plot,
-    plot_activity_clusters
+    plot_activity_clusters,
+    plot_cluster_pairs,
 )
 
 
@@ -237,7 +251,7 @@ def main():
         file_to_save = os.path.join(args.data_dir, "files", "F.npy")
         np.save(file_to_save, Fcorr_around_cue)
 
-    # Initialize parameters
+    # Initialize parameters for plotting
     window_size = int(Fcorr_around_cue.shape[1] / len(args.trial_types))
     framerate = args.framerate
     frames_to_reward = args.delay_to_reward * framerate
@@ -247,7 +261,7 @@ def main():
         pre_window_size + frames_to_reward,
     ]
 
-    # Plot PSTH
+    # # Plot PSTH
     # fig_calcium_PSTH = plot_average_PSTH_around_interest_window(
     #     args.trial_types,
     #     Fcorr_around_cue,
@@ -261,9 +275,9 @@ def main():
     # plt.close(fig_calcium_PSTH)
 
     # # Get the example cells based on sorted response, plot PSTH
-    # sortresponse = np.argsort(np.mean(Fcorr_around_cue[:, sortwindow[0] : sortwindow[1]], axis=1))[
-    #     ::-1
-    # ]
+    # sortresponse = np.argsort(
+    #     np.mean(Fcorr_around_cue[:, sortwindow[0] : sortwindow[1]], axis=1)
+    # )[::-1]
     # example_cells = list(sortresponse[:200]) + list(sortresponse[-200:])
     # F_example_cells = Fcorr_around_cue[example_cells, :]
     # fig_calcium_PSTH_example_cells = plot_average_PSTH_around_interest_window(
@@ -280,13 +294,10 @@ def main():
     # )
     # plt.close(fig_calcium_PSTH_example_cells)
 
-    # PCA
+    ## PCA
     populationdata = Fcorr_around_cue
     pca = PCA(n_components=populationdata.shape[1], whiten=True)
     pca.fit(populationdata)
-    transformed_data = pca.transform(populationdata)
-    np.save(os.path.join(file_dir,'transformed_data.npy'), transformed_data) 
-
     pca_vectors = pca.components_
     print("Number of PCs = %d" % (pca_vectors.shape[0]))
     x = 100 * pca.explained_variance_ratio_
@@ -294,9 +305,17 @@ def main():
     num_retained_pcs = np.argmin(xprime)
     print("Number of PCs to keep = %d" % (num_retained_pcs))
     
-    # fig_pc_screenplot = plot_PC_screenplot(pca, num_retained_pcs)
-    # fig_pc_screenplot.savefig(os.path.join(result_dir, "PC_screenplot.png"), format="png")
+    # # dimension-reduced data on the first principal components
+    # transformed_data = pca.transform(populationdata)  
+    # np.save(os.path.join(file_dir, "transformed_data.npy"), transformed_data)
+    
+    # # Plot PC screen plot
+    # fig_pc_screenplot = plot_PC_screenplot(pca, x, num_retained_pcs)
+    # fig_pc_screenplot.savefig(
+    #     os.path.join(result_dir, "PC_screenplot.png"), format="png"
+    # )
 
+    # # Plot PCs
     # fig_pcs = plot_PCs(
     #     pca_vectors,
     #     num_retained_pcs,
@@ -307,138 +326,120 @@ def main():
     #     framerate,
     # )
     # fig_pcs.savefig(os.path.join(result_dir, "PCs.png"), format="png")
+    # plt.close(fig_pcs)
 
+    # ## Clustering
+    # max_n_clusters = 11  # can run more but takes longer, 9 is relatively optimal
+    # possible_n_clusters = np.arange(2, max_n_clusters + 1)  # has to be at least two
+    # possible_n_nearest_neighbors = np.array(
+    #     [100, 500, 1000]
+    # )  # depends on the size of the data
+    # silhouette_scores = np.nan * np.ones(
+    #     (possible_n_clusters.size, possible_n_nearest_neighbors.size)
+    # )
 
-    ## Clustering 
-    max_n_clusters = 11
-    possible_n_clusters = np.arange(2, max_n_clusters+1)
-    possible_n_nearest_neighbors = np.array([100, 500, 1000])    
-    silhouette_scores = np.nan*np.ones((possible_n_clusters.size,
-                                        possible_n_nearest_neighbors.size))
+    # # Fit clusters with Spectral Clustering
+    # for n_clustersidx, n_clusters in enumerate(possible_n_clusters):
+    #     for nnidx, nn in enumerate(possible_n_nearest_neighbors):
+    #         model = SpectralClustering(
+    #             n_clusters=n_clusters, affinity="nearest_neighbors", n_neighbors=nn
+    #         )  # separate clusters based on n-nearest neighbors
+    #         model.fit(transformed_data[:, :num_retained_pcs])
+    #         silhouette_scores[n_clustersidx, nnidx] = silhouette_score(
+    #             transformed_data[:, :num_retained_pcs], model.labels_, metric="cosine"
+    #         )  # silhouette coeff = (mean near-cluster distance - mean intra-cluster distance) / max of the two, 1 is the best, -1 is the worst
+    #         print(
+    #             "Done with numclusters = %d, num nearest neighbors = %d: score = %.3f"
+    #             % (n_clusters, nn, silhouette_scores[n_clustersidx, nnidx])
+    #         )
+    # print("Done with model fitting")
 
-    for n_clustersidx, n_clusters in enumerate(possible_n_clusters):
-        for nnidx, nn in enumerate(possible_n_nearest_neighbors):
-            model = SpectralClustering(n_clusters=n_clusters, affinity='nearest_neighbors', n_neighbors=nn)
-            model.fit(transformed_data[:,:num_retained_pcs])
-            silhouette_scores[n_clustersidx, nnidx] = silhouette_score(transformed_data[:,:num_retained_pcs],
-                                                                    model.labels_,
-                                                                    metric='cosine')
-            print( 'Done with numclusters = %d, num nearest neighbors = %d: score = %.3f'%(n_clusters,
-                                                                                        nn,
-                                                                                        silhouette_scores[n_clustersidx,                                                                           
-                                                                                                            nnidx]))
-    print('Done with model fitting')
-
-    temp = {}
-    temp['possible_n_clusters'] = possible_n_clusters
-    temp['possible_n_nearest_neighbors'] = possible_n_nearest_neighbors
-    temp['silhouette_scores'] = silhouette_scores
-    temp['shape'] = 'cluster_nn'
-    with open(os.path.join(file_dir, 'silhouette_scores.pickle'), 'wb') as f:
-        pickle.dump(temp, f)    
-    with open(os.path.join(file_dir, 'silhouette_scores.pickle'), 'rb') as f:
+    # temp = {}
+    # temp["possible_n_clusters"] = possible_n_clusters
+    # temp["possible_n_nearest_neighbors"] = possible_n_nearest_neighbors
+    # temp["silhouette_scores"] = silhouette_scores
+    # temp["shape"] = "cluster_nn"
+    # with open(os.path.join(file_dir, "silhouette_scores.pickle"), "wb") as f:
+    #     pickle.dump(temp, f)
+    
+    with open(os.path.join(file_dir, "silhouette_scores.pickle"), "rb") as f:
         silhouette_scores = pickle.load(f)
-        
-    # transformed_data = np.load(os.path.join(file_dir, 'transformed_data.npy'))
-
     # Identify optimal parameters from the above parameter space
-    temp = np.where(silhouette_scores['silhouette_scores']==np.nanmax(silhouette_scores['silhouette_scores']))
-    n_clusters = silhouette_scores['possible_n_clusters'][temp[0][0]]
-    n_nearest_neighbors = silhouette_scores['possible_n_nearest_neighbors'][temp[1][0]]
+    temp = np.where(
+        silhouette_scores["silhouette_scores"]
+        == np.nanmax(silhouette_scores["silhouette_scores"])
+    )
+    n_clusters = silhouette_scores["possible_n_clusters"][temp[0][0]]
+    n_nearest_neighbors = silhouette_scores["possible_n_nearest_neighbors"][temp[1][0]]
+    print(
+        "Optimal number of clusters:",
+        n_clusters,
+        "; Optimal neighbors:",
+        n_nearest_neighbors,
+    )
 
-    print(n_clusters, n_nearest_neighbors)
-
-    # Redo clustering with these optimal parameters
-    model = SpectralClustering(n_clusters=n_clusters,
-                            affinity='nearest_neighbors',
-                            n_neighbors=n_nearest_neighbors)
-
+    transformed_data = np.load(os.path.join(file_dir, "transformed_data.npy"))
+    # # Redo clustering with these optimal parameters
+    model = SpectralClustering(
+        n_clusters=n_clusters,
+        affinity="nearest_neighbors",
+        n_neighbors=n_nearest_neighbors,
+    )
     # model = KMeans(n_clusters=n_clusters)
-
     # model = AgglomerativeClustering(n_clusters=9,
     #                                 affinity='l1',
     #                                 linkage='average')
+    model.fit(transformed_data[:, :num_retained_pcs])
 
-    model.fit(transformed_data[:,:num_retained_pcs])
+    temp = silhouette_score(
+        transformed_data[:, :num_retained_pcs], model.labels_, metric="cosine"
+    )
+    print(
+        "Number of clusters = %d, average silhouette = %.3f"
+        % (len(set(model.labels_)), temp)
+    )
 
-    temp = silhouette_score(transformed_data[:,:num_retained_pcs], model.labels_, metric='cosine')
-
-    print('Number of clusters = %d, average silhouette = %.3f'%(len(set(model.labels_)), temp))
-
-    # Save this optimal clustering model.
-    # with open(os.path.join(basedir, 'clusteringmodel.pickle'), 'wb') as f:
+    # # Save this optimal clustering model.
+    # with open(os.path.join(file_dir, 'clusteringmodel.pickle'), 'wb') as f:
     #     pickle.dump(model, f)
 
-            
-    # Since the clustering labels are arbitrary, I rename the clusters so that the first cluster will have the most
+    # Rename the clusters so that the first cluster will have the most
     # positive response and the last cluster will have the most negative response.
-    def reorder_clusters(rawlabels):
-        uniquelabels = list(set(rawlabels))
-        responses = np.nan*np.ones((len(uniquelabels),))
-        for l, label in enumerate(uniquelabels):
-            responses[l] = np.mean(populationdata[rawlabels==label, pre_window_size:2*pre_window_size])
-        temp = np.argsort(responses).astype(int)[::-1]
-        temp = np.array([np.where(temp==a)[0][0] for a in uniquelabels])
-        outputlabels = np.array([temp[a] for a in list(np.digitize(rawlabels, uniquelabels)-1)])
-        return outputlabels
-    
-    newlabels = reorder_clusters(model.labels_)
+    newlabels = reorder_clusters(populationdata, pre_window_size, model.labels_)
 
     # Create a new variable containing all unique cluster labels
     uniquelabels = list(set(newlabels))
+    np.save(os.path.join(file_dir, "clusterlabels.npy"), newlabels)
 
-    # np.save(os.path.join(basedir, 'OFCCaMKII_clusterlabels.npy'), newlabels)
-    
-    # fig_silouette = make_silhouette_plot(transformed_data[:,:num_retained_pcs], model.labels_)
-    # fig_silouette.savefig(os.path.join(result_dir, 'silouette.png'), format='png')
-    cmax = 0.1
-    sortwindow = [15, 100]
-    # fig_activity_cluster = plot_activity_clusters(populationdata, uniquelabels, newlabels, args.trial_types, sortwindow, window_size, pre_window_size, frames_to_reward, framerate)
-    # fig_activity_cluster.savefig(os.path.join(result_dir, 'activity_clusters.png'), format='png')
+    # uniquelabels = np.load(os.path.join(file_dir, "clusterlabels.npy"))
+    # # Plot silhouette coefficient scores for each cluster
+    # fig_silouette = make_silhouette_plot(
+    #     transformed_data[:, :num_retained_pcs], model.labels_
+    # )
+    # fig_silouette.savefig(os.path.join(result_dir, "silouette.png"), format="png")
 
-    num_clusterpairs = len(uniquelabels)*(len(uniquelabels)-1)/2
-    colors_for_cluster = [[0.933, 0.250, 0.211],
-                        [0.941, 0.352, 0.156],
-                        [0.964, 0.572, 0.117],
-                        [0.980, 0.686, 0.250],
-                        [0.545, 0.772, 0.247],
-                        [0.215, 0.701, 0.290],
-                        [0, 0.576, 0.270],
-                        [0, 0.650, 0.611],
-                        [0.145, 0.662, 0.878],
-                        [0.604, 0.055, 0.918]]
-    numrows = int(np.ceil(num_clusterpairs**0.5))
-    numcols = int(np.ceil(num_clusterpairs/np.ceil(num_clusterpairs**0.5)))
-    fig, axs = plt.subplots(numrows, numcols, figsize=(3*numrows, 3*numcols))
+    # Plot activity clusters under each CS
+    fig_activity_cluster = plot_activity_clusters(
+        populationdata,
+        uniquelabels,
+        newlabels,
+        args.trial_types,
+        [15, 100],
+        window_size,
+        pre_window_size,
+        frames_to_reward,
+        framerate,
+    )
+    fig_activity_cluster.savefig(
+        os.path.join(result_dir, "activity_clusters.png"), format="png"
+    )
 
-    tempsum = 0
-    for c1, cluster1 in enumerate(uniquelabels):
-        for c2, cluster2 in enumerate(uniquelabels):
-            if cluster1>=cluster2:
-                continue
-            temp1 = transformed_data[np.where(newlabels==cluster1)[0], :num_retained_pcs]
-            temp2 = transformed_data[np.where(newlabels==cluster2)[0], :num_retained_pcs]
-            X = np.concatenate((temp1, temp2), axis=0)
-            tsne = TSNE(n_components=2, init='random',
-                        random_state=0, perplexity=100)
-            Y = tsne.fit_transform(X)
-            ax = axs[int(np.round(tempsum/numcols)),
-                     int(np.round(tempsum - tempsum/numcols*numcols))]   
-            ax.scatter(Y[:np.sum(newlabels==cluster1),0],
-                    Y[:np.sum(newlabels==cluster1),1],
-                    color=colors_for_cluster[cluster1], label='Cluster %d'%(cluster1+1), alpha=1)
-            ax.scatter(Y[np.sum(newlabels==cluster1):,0],
-                    Y[np.sum(newlabels==cluster1):,1],
-                    color=colors_for_cluster[cluster2], label='Cluster %d'%(cluster2+1), alpha=1)
+    # # Plot all cluster pairs
+    # fig_cluster_pairs = plot_cluster_pairs(
+    #     transformed_data, uniquelabels, newlabels, num_retained_pcs
+    # )
+    # fig_cluster_pairs.savefig(os.path.join(result_dir, "clusters.png"), format="png")
 
-            ax.set_xlabel('tsne dimension 1')
-            ax.set_ylabel('tsne dimension 2')
-            ax.legend()
-            tempsum += 1
-    fig.tight_layout()        
-        
-        
-        
 
 if __name__ == "__main__":
-     main()
+    main()

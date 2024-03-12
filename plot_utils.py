@@ -3,7 +3,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib.ticker as ticker
 import os
-from sklearn.metrics import accuracy_score, silhouette_score, adjusted_rand_score, silhouette_samples
+from sklearn.metrics import (
+    accuracy_score,
+    silhouette_score,
+    adjusted_rand_score,
+    silhouette_samples,
+)
+from sklearn.manifold import TSNE
 
 sns.set_style("ticks")
 import matplotlib as mpl
@@ -26,6 +32,23 @@ mpl.rcParams["lines.dashed_pattern"] = (2, 1)
 mpl.rcParams["font.sans-serif"] = ["Helvetica LT Std"]
 mpl.rcParams["pdf.fonttype"] = 42
 mpl.rcParams["text.color"] = "k"
+
+
+def tsplot(data, ax, color, label, **kw):
+    x = np.arange(data.shape[1])
+    est = np.mean(data, axis=0)
+    sd = np.std(data, axis=0)
+    cis = (est - sd / np.sqrt(data.shape[0]), est + sd / np.sqrt(data.shape[0]))
+    ax.fill_between(x, cis[0], cis[1], alpha=0.2, color=color, **kw)
+    ax.plot(x, est, color=color, label=label, **kw)
+    ax.margins(x=0)
+    return ax
+
+def standardize_plot_graphics(ax):
+    [i.set_linewidth(0.5) for i in ax.spines.values()]
+    ax.spines["right"].set_visible(False)
+    ax.spines["top"].set_visible(False)
+    return ax
 
 
 def plot_raw_licks(CS, licks, before, after):
@@ -205,11 +228,8 @@ def plot_individual_cells_activity(
             )
             plt.close(fig_cell)
 
-def plot_PC_screenplot(
-    pca,
-    num_retained_pcs
-):
 
+def plot_PC_screenplot(pca, x, num_retained_pcs):
 
     fig, ax = plt.subplots(figsize=(2, 2))
     ax.plot(np.arange(pca.explained_variance_ratio_.shape[0]).astype(int) + 1, x, "k")
@@ -226,7 +246,7 @@ def plot_PC_screenplot(
     fig.subplots_adjust(right=0.98)
     fig.subplots_adjust(bottom=0.25)
     fig.subplots_adjust(top=0.9)
-    
+
     return fig
 
 
@@ -312,19 +332,21 @@ def plot_PCs(
 
 
 def make_silhouette_plot(X, cluster_labels):
-    colors_for_cluster = [[0.933, 0.250, 0.211],
-                        [0.941, 0.352, 0.156],
-                        [0.964, 0.572, 0.117],
-                        [0.980, 0.686, 0.250],
-                        [0.545, 0.772, 0.247],
-                        [0.215, 0.701, 0.290],
-                        [0, 0.576, 0.270],
-                        [0, 0.650, 0.611],
-                        [0.145, 0.662, 0.878],
-                        [0.604, 0.055, 0.918]]
-        
+    colors_for_cluster = [
+        [0.933, 0.250, 0.211],
+        [0.941, 0.352, 0.156],
+        [0.964, 0.572, 0.117],
+        [0.980, 0.686, 0.250],
+        [0.545, 0.772, 0.247],
+        [0.215, 0.701, 0.290],
+        [0, 0.576, 0.270],
+        [0, 0.650, 0.611],
+        [0.145, 0.662, 0.878],
+        [0.604, 0.055, 0.918],
+    ]
+
     n_clusters = len(set(cluster_labels))
-    
+
     fig_silhouette, ax = plt.subplots(1, 1)
     fig_silhouette.set_size_inches(4, 4)
 
@@ -335,17 +357,16 @@ def make_silhouette_plot(X, cluster_labels):
     # The (n_clusters+1)*10 is for inserting blank space between silhouette
     # plots of individual clusters, to demarcate them clearly.
     ax.set_ylim([0, len(X) + (n_clusters + 1) * 10])
-    silhouette_avg = silhouette_score(X, cluster_labels, metric='cosine')
+    silhouette_avg = silhouette_score(X, cluster_labels, metric="cosine")
 
     # Compute the silhouette scores for each sample
-    sample_silhouette_values = silhouette_samples(X, cluster_labels, metric='cosine')
+    sample_silhouette_values = silhouette_samples(X, cluster_labels, metric="cosine")
 
     y_lower = 10
     for i in range(n_clusters):
         # Aggregate the silhouette scores for samples belonging to
         # cluster i, and sort them
-        ith_cluster_silhouette_values = \
-            sample_silhouette_values[cluster_labels == i]
+        ith_cluster_silhouette_values = sample_silhouette_values[cluster_labels == i]
 
         ith_cluster_silhouette_values.sort()
 
@@ -353,12 +374,17 @@ def make_silhouette_plot(X, cluster_labels):
         y_upper = y_lower + size_cluster_i
 
         color = colors_for_cluster[i]
-        ax.fill_betweenx(np.arange(y_lower, y_upper),
-                        0, ith_cluster_silhouette_values,
-                        facecolor=color, edgecolor=color, alpha=0.9)
+        ax.fill_betweenx(
+            np.arange(y_lower, y_upper),
+            0,
+            ith_cluster_silhouette_values,
+            facecolor=color,
+            edgecolor=color,
+            alpha=0.9,
+        )
 
         # Label the silhouette plots with their cluster numbers at the middle
-        ax.text(-0.05, y_lower + 0.5 * size_cluster_i, str(i+1))
+        ax.text(-0.05, y_lower + 0.5 * size_cluster_i, str(i + 1))
 
         # Compute the new y_lower for next plot
         y_lower = y_upper + 10  # 10 for the 0 samples
@@ -371,55 +397,201 @@ def make_silhouette_plot(X, cluster_labels):
         ax.axvline(x=silhouette_avg, color="red", linestyle="--")
 
         ax.set_yticks([])  # Clear the yaxis labels / ticks
-        ax.set_xticks([-0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8, 1])  
+        ax.set_xticks([-0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8, 1])
     return fig_silhouette
 
 
-def plot_activity_clusters(populationdata, uniquelabels, newlabels, trial_types, sortwindow, window_size, pre_window_size, frames_to_reward, framerate):
-    fig_activity_cluster, axs = plt.subplots(len(trial_types),len(uniquelabels),
-                            figsize=(2*len(uniquelabels),2*len(trial_types)))
-    cbar_ax = fig_activity_cluster.add_axes([.94, .3, .01, .4])
-    cbar_ax.tick_params(width=0.5) 
+def plot_activity_clusters(
+    populationdata,
+    uniquelabels,
+    newlabels,
+    trial_types,
+    sortwindow,
+    window_size,
+    pre_window_size,
+    frames_to_reward,
+    framerate,
+):
+    colors_for_key = {}
+    colors_for_key["CS1+"] = (0, 0.5, 1)
+    colors_for_key["CS2+"] = (1, 0.5, 0)
+    colors_for_key["CS3-"] = (0.5, 0.5, 0.5)
 
-    numroisincluster = np.nan*np.ones((len(uniquelabels),))
+    fig_activity_cluster, axs = plt.subplots(
+        len(trial_types) + 1,
+        len(uniquelabels),
+        figsize=(2 * len(uniquelabels), 2 * (len(trial_types) + 1)),
+    )
+    cbar_ax = fig_activity_cluster.add_axes([0.94, 0.3, 0.01, 0.4])
+    cbar_ax.tick_params(width=0.5)
+    cmax = 0.1
+
+    numroisincluster = np.nan * np.ones((len(uniquelabels),))
 
     for c, cluster in enumerate(uniquelabels):
         for k, tempkey in enumerate(trial_types):
-            temp = populationdata[np.where(newlabels==cluster)[0], k*window_size:(k+1)*window_size]
+            temp = populationdata[
+                np.where(newlabels == cluster)[0],
+                k * window_size : (k + 1) * window_size,
+            ]
             numroisincluster[c] = temp.shape[0]
-            sortresponse = np.argsort(np.mean(temp[:,sortwindow[0]:sortwindow[1]], axis=1))[::-1]
-            sns.heatmap(temp[sortresponse],
-                        ax=axs[k, cluster],
-                        cmap=plt.get_cmap('coolwarm'),
-                        vmin=-.1,
-                        vmax=.1,
-                        cbar=(cluster==0),
-                        cbar_ax=cbar_ax if (cluster==0) else None,
-                        cbar_kws={'label': 'Normalized fluorescence'})
+            sortresponse = np.argsort(
+                np.mean(temp[:, sortwindow[0] : sortwindow[1]], axis=1)
+            )[::-1]
+            sns.heatmap(
+                temp[sortresponse],
+                ax=axs[k, cluster],
+                cmap=plt.get_cmap("coolwarm"),
+                vmin=-cmax,
+                vmax=cmax,
+                cbar=(cluster == 0),
+                cbar_ax=cbar_ax if (cluster == 0) else None,
+                cbar_kws={"label": "Normalized fluorescence"},
+            )
             axs[k, cluster].grid(False)
-            if k==len(trial_types)-1:
-                axs[k, cluster].set_xticks([0, pre_window_size,
-                                            pre_window_size + frames_to_reward, window_size])
-            else:
-                axs[k, cluster].set_xticks([])
-            axs[k, cluster].tick_params(width=0.5)    
-            axs[k, cluster].set_xticklabels([str(int((a-pre_window_size+0.0)/framerate))
-                                            for a in [0, pre_window_size,
-                                                    pre_window_size + frames_to_reward, window_size]])
+            axs[k, cluster].tick_params(width=0.5)
+            axs[k, cluster].set_xticklabels([])
+            # axs[k, cluster].set_xticklabels(
+            #     [
+            #         str(int((a - pre_window_size + 0.0) / framerate))
+            #         for a in [
+            #             0,
+            #             pre_window_size,
+            #             pre_window_size + frames_to_reward,
+            #             window_size,
+            #         ]
+            #     ]
+            # )
             axs[k, cluster].set_yticks([])
-            axs[k, cluster].axvline(pre_window_size, linestyle='--', color='k', linewidth=0.5)
-            axs[k, cluster].axvline(pre_window_size + frames_to_reward, linestyle='--', color='k', linewidth=0.5)
-            if cluster==0:
-                axs[k, 0].set_ylabel('%s\nNeurons'%(tempkey))
-        axs[0, cluster].set_title('Cluster %d\n(n=%d)'%(cluster+1, numroisincluster[c]))
-        
-    fig_activity_cluster.text(0.5, 0.05, 'Time from cue (s)', fontsize=12,
-            horizontalalignment='center', verticalalignment='center', rotation='horizontal')
-    fig_activity_cluster.tight_layout()
+            axs[k, cluster].axvline(
+                pre_window_size, linestyle="--", color="k", linewidth=0.5
+            )
+            axs[k, cluster].axvline(
+                pre_window_size + frames_to_reward,
+                linestyle="--",
+                color="k",
+                linewidth=0.5,
+            )
+            if cluster == 0:
+                axs[k, 0].set_ylabel("%s\nNeurons" % (tempkey))
 
+            # Plot average PSTH for each cluster, each CS
+            ax = axs[-1, cluster]
+            ax = tsplot(
+                temp,
+                ax=ax,
+                color=colors_for_key[tempkey],
+                label=tempkey if (cluster == (len(uniquelabels)-1)) else None,
+            )
+            ax.axvline(pre_window_size, linestyle="--", color="k", linewidth=0.5)
+            ax.axvline(
+                pre_window_size + frames_to_reward,
+                linestyle="--",
+                color="k",
+                linewidth=0.5,
+            )
+            ax.set_xticks(
+                [0, pre_window_size, pre_window_size + frames_to_reward, window_size]
+            )
+            ax.set_xticklabels(
+                [
+                    str(int((a - pre_window_size + 0.0) / framerate))
+                    for a in [
+                        0,
+                        pre_window_size,
+                        pre_window_size + frames_to_reward,
+                        window_size,
+                    ]
+                ]
+            )
+            if cluster == 0:
+                ax.set_ylim([-0.02, 0.02])
+            else:
+                ax.set_yticks([])
+            ax.legend(bbox_to_anchor=(0.94, 0.22), bbox_transform=fig_activity_cluster.transFigure, frameon=False)
+            standardize_plot_graphics(ax)
+
+        axs[-1, 0].set_ylabel("Mean fluor")
+        axs[0, cluster].set_title(
+            "Cluster %d\n(n=%d)" % (cluster + 1, numroisincluster[c])
+        )
+    fig_activity_cluster.text(
+        0.5,
+        0.05,
+        "Time from cue (s)",
+        fontsize=12,
+        horizontalalignment="center",
+        verticalalignment="center",
+        rotation="horizontal",
+    )
+    # fig_activity_cluster.tight_layout()
     fig_activity_cluster.subplots_adjust(wspace=0.1, hspace=0.1)
-    fig_activity_cluster.subplots_adjust(left=0.03)
+    fig_activity_cluster.subplots_adjust(left=0.1)
     fig_activity_cluster.subplots_adjust(right=0.93)
     fig_activity_cluster.subplots_adjust(bottom=0.1)
     fig_activity_cluster.subplots_adjust(top=0.83)
+
     return fig_activity_cluster
+
+
+def plot_cluster_pairs(transformed_data, uniquelabels, newlabels, num_retained_pcs):
+
+    num_clusterpairs = len(uniquelabels) * (len(uniquelabels) - 1) / 2
+    colors_for_cluster = [
+        [0.933, 0.250, 0.211],
+        [0.941, 0.352, 0.156],
+        [0.964, 0.572, 0.117],
+        [0.980, 0.686, 0.250],
+        [0.545, 0.772, 0.247],
+        [0.215, 0.701, 0.290],
+        [0, 0.576, 0.270],
+        [0, 0.650, 0.611],
+        [0.145, 0.662, 0.878],
+        [0.604, 0.055, 0.918],
+    ]
+    numrows = int(np.ceil(num_clusterpairs**0.5))
+    numcols = int(np.ceil(num_clusterpairs / np.ceil(num_clusterpairs**0.5)))
+    fig_cluster_pairs, axs = plt.subplots(
+        numrows, numcols, figsize=(3 * numrows, 3 * numcols)
+    )
+
+    tempsum = 0
+    for c1, cluster1 in enumerate(uniquelabels):
+        for c2, cluster2 in enumerate(uniquelabels):
+            if cluster1 >= cluster2:
+                continue
+            temp1 = transformed_data[
+                np.where(newlabels == cluster1)[0], :num_retained_pcs
+            ]
+            temp2 = transformed_data[
+                np.where(newlabels == cluster2)[0], :num_retained_pcs
+            ]
+            X = np.concatenate((temp1, temp2), axis=0)
+            tsne = TSNE(
+                n_components=2, init="random", random_state=0, perplexity=100
+            )  # visualize clusters
+            Y = tsne.fit_transform(X)
+            ax = axs[
+                int(np.floor(tempsum / numcols)), int(np.remainder(tempsum, numcols))
+            ]
+            ax.scatter(
+                Y[: np.sum(newlabels == cluster1), 0],
+                Y[: np.sum(newlabels == cluster1), 1],
+                color=colors_for_cluster[cluster1],
+                label="Cluster %d" % (cluster1 + 1),
+                alpha=1,
+            )
+            ax.scatter(
+                Y[np.sum(newlabels == cluster1) :, 0],
+                Y[np.sum(newlabels == cluster1) :, 1],
+                color=colors_for_cluster[cluster2],
+                label="Cluster %d" % (cluster2 + 1),
+                alpha=1,
+            )
+            ax.set_xlabel("tsne dimension 1")
+            ax.set_ylabel("tsne dimension 2")
+            ax.legend()
+            tempsum += 1
+    fig_cluster_pairs.tight_layout()
+
+    return fig_cluster_pairs

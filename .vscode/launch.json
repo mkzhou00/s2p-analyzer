@@ -6,12 +6,15 @@
     "configurations": [
         {
             "name": "Python: Current File",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "justMyCode": true,
-            // "args": ["--data_dir", "~/User/kk/alksdjhfljk"]
+            // "console": "internalConsole",
+            "justMyCode": false,
+            // "python.termina..intergrated.inheritEnv": false,
+            // "python.terminal.activateEnvironment": false,
+            // "args": ["--data_dir", "Z:\\2p\\experiment1\\MZ_hpc_prism_M6\\d7\\"]
         }
     ]
 }
