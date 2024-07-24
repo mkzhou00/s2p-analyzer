@@ -83,14 +83,17 @@ def extract_cues(event_df: pd.DataFrame, voltages: pd.DataFrame):
     return event_cues, voltage_cues
 
 
-def correct_arduino_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame):
+def correct_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame, images):
     """
     Arduino time drifts (assume linear) w.r.t. computer time. Correct timestamps
     collected on Arduino given corresponding computer timestamps.
+    
+    Imaging timestamps also drifts, correct based on voltage time stamps
 
     Args:
         event_df[in/out]: Events w/ timestamps collected on Arduino.
         voltages[in]: Corresponding timestamps collected on computer.
+        images[in/out]: image timestamps collected on computer 
     """
     ### Voltages (computer received)
 
@@ -113,24 +116,36 @@ def correct_arduino_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame):
     event_cues, voltage_cues = extract_cues(event_df, voltages)
     assert len(event_cues) > 0
 
-    if len(voltage_cues) > 0:
-        ## Linear scaling across time points for each cue, with accurate TTL2 signal
-        scale = 0
-        for e_cue, v_cue in zip(event_cues, voltage_cues):
-            scale += v_cue / e_cue
-        scale /= len(event_cues)
-        # Correct for linear scale.
-        event_df["Timestamp"] *= scale
-        # new_event_cues = extract_cues_from_events(event_df)
-    else:
-        ## Linear scaling just using start and end time points, this is for when TTL2 is not working well
-        scale = 0
-        end_v = v_in_session["Time(ms)"].iloc[-1]
-        end_e = event_df["Timestamp"].iloc[-1]
-        scale = end_v / end_e
-        event_df["Timestamp"] *= scale
-        # new_event_cues = extract_cues_from_events(event_df)
-
+    # if len(voltage_cues) > 0:
+    #     ## Linear scaling across time points for each cue, with accurate TTL2 signal
+    #     scale = 0
+    #     for e_cue, v_cue in zip(event_cues, voltage_cues):
+    #         scale += v_cue / e_cue
+    #     scale /= len(event_cues)
+    #     # Correct for linear scale.
+    #     event_df["Timestamp"] *= scale
+    #     # new_event_cues = extract_cues_from_events(event_df)
+    # else:
+    #     ## Linear scaling just using start and end time points, this is for when TTL2 is not working well
+    
+    # Scaling events 
+    scale = 0
+    end_v = v_in_session["Time(ms)"].iloc[-1]
+    end_e = event_df["Timestamp"].iloc[-1]
+    scale = end_v / end_e
+    event_df["Timestamp"] *= scale
+    # new_event_cues = extract_cues_from_events(event_df)
+    
+    # Scaling image points
+    scale = 0
+    end_v = voltages["Time(ms)"].iloc[-1] / 1E3
+    end_im = max(images[:][-1])
+    scale = end_v / end_im
+    new_images = []
+    for ip in range(len(images)):
+        sublist = (np.array(images[ip])*scale).tolist()
+        new_images.append(sublist)
+    
     ## for non linear scaling across time points, correct for each cue
     # if len(event_cues) == len(voltage_cues):
     #     for icue, (e_cue, v_cue) in enumerate(zip(event_cues, voltage_cues)):
@@ -148,7 +163,7 @@ def correct_arduino_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame):
     #             ].index.tolist()
     #             event_df["Timestamp"][idx_events_after_cue] *= scale
     #     new_event_cues = extract_cues_from_events(event_df)
-
+    return event_df, new_images
 
 def extract_events(event_df: pd.DataFrame):
     # get all events in seconds
