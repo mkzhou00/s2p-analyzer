@@ -185,7 +185,7 @@ def plot_individual_cells_activity(
 
     for ip in range(num_planes):
         for cell in cells_per_plane[ip]:
-            fig_cell, axs = plt.subplots(len(CS[0]), len(CS), figsize=(10, 5))
+            fig_cell, axs = plt.subplots(len(CS[0]), len(CS), figsize=(10, 10))
             for cue_type, cs in enumerate(CS):
                 cue_ts = im_idx_around_cues[ip][cue_type]
                 if cue_type == 0:
@@ -219,16 +219,29 @@ def plot_individual_cells_activity(
             axs[0, 1].title.set_text("CS2+")
             axs[0, 2].title.set_text("CS3-")
             # fig_cell.tight_layout()
-            fig_cell.savefig(
-                os.path.join(
-                    result_dir,
-                    "PSTH" + "_plane" + str(ip + 1) + "_cell" + str(cell) + ".png",
-                ),
-                format="png",
-            )
-            plt.close(fig_cell)
+            plt.show(fig_cell)
 
-
+def plot_individual_trial_activity(
+    F, CS, im_idx_around_cues, cells_to_plot, num_planes: int, result_dir
+):
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
 def plot_PC_screenplot(pca, x, num_retained_pcs):
 
     fig, ax = plt.subplots(figsize=(2, 2))

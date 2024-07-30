@@ -104,7 +104,7 @@ def correct_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame, images):
     v_session_first_ts = v_in_session.iloc[0][0]
 
     # Subtract all ts using first timestamp, effectively making event starts at 0.
-    v_in_session["Time(ms)"] -= v_session_first_ts
+    v_in_session["Time(ms)"] = v_in_session["Time(ms)"] - v_session_first_ts
 
     # Do the same thing for Events (on Arduino), setting event start at 0.
     e_session_start = event_df.loc[event_df["Events"] == 1]
@@ -183,19 +183,20 @@ def extract_events(event_df: pd.DataFrame):
 
 
 def get_cell_only_activity(
-    F: list, Fneu: list, is_cell: list, num_planes: int, threshold: int
+    F: list, Fneu: list, is_cell: list, num_planes: int
 ):
     """
     Returns cell only activity for traces and spikes based on is_cell, 1==cell, 0==not cell in is_cell, for each plane.
 
     """
+    threshold = 0.03 # percentage of F higher than Fneu required to classify as cell 
     F_cell = [[] for _ in range(num_planes)]
     Fneu_cell = [[] for _ in range(num_planes)]
 
     for ip in range(num_planes):
         cell_idx = [index for index, value in enumerate(is_cell[ip]) if value[0] == 1]
         for cell in cell_idx:
-            if np.mean(F[ip][cell, :] / Fneu[ip][cell, :]) >= (1 + threshold / 1e3):
+            if np.mean(F[ip][cell, :]) > np.mean(Fneu[ip][cell, :]) + threshold * np.mean(Fneu[ip][cell, :]):
                 F_cell[ip].append(F[ip][cell, :])
                 Fneu_cell[ip].append(Fneu[ip][cell, :])
 
@@ -212,7 +213,7 @@ def get_corrected_F(F_cell: list, Fneu_cell: list, num_planes: int, coeff: float
     return Fcorr
 
 
-def extract_interest_time_intervals(event_cues, args):
+def extract_interest_time_intervals(event_cues, pre_cue_window, post_cue_window):
     """
     This function takes the event cue times and interest time window to generate interest time intervals around each cue.
     Total length is the number of cues.
@@ -224,8 +225,8 @@ def extract_interest_time_intervals(event_cues, args):
         for cue in cue_type:
             interest_interval[ct].append(
                 [
-                    cue - args.pre_cue_window,
-                    cue + args.post_cue_window,
+                    cue - pre_cue_window,
+                    cue + post_cue_window,
                 ]
             )
     return interest_interval
@@ -307,7 +308,7 @@ def extract_Fave_around_events(
         num_planes: number of planes
 
     Returns:
-    Fcorrected_around_cue with the structure of len(CS) x number of cells
+    Fcorrected_around_cue with the structure of len(CS), number of cells, timepoints
 
     """
     # F_ave_around_cues = [[] for _ in range(len(CS))]
