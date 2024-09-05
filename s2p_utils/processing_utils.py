@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import scipy.stats as stats
 
+
 def correct_overlapping_cells_across_planes(stat, iscell):
     cellidx = []
     for ip in range(len(iscell)):
@@ -87,13 +88,13 @@ def correct_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame, images):
     """
     Arduino time drifts (assume linear) w.r.t. computer time. Correct timestamps
     collected on Arduino given corresponding computer timestamps.
-    
+
     Imaging timestamps also drifts, correct based on voltage time stamps
 
     Args:
         event_df[in/out]: Events w/ timestamps collected on Arduino.
         voltages[in]: Corresponding timestamps collected on computer.
-        images[in/out]: image timestamps collected on computer 
+        images[in/out]: image timestamps collected on computer
     """
     ### Voltages (computer received)
 
@@ -127,25 +128,28 @@ def correct_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame, images):
     #     # new_event_cues = extract_cues_from_events(event_df)
     # else:
     #     ## Linear scaling just using start and end time points, this is for when TTL2 is not working well
-    
-    # Scaling events 
+
+    # Scaling events
     scale = 0
     end_v = v_in_session["Time(ms)"].iloc[-1]
     end_e = event_df["Timestamp"].iloc[-1]
     scale = end_v / end_e
     event_df["Timestamp"] *= scale
     # new_event_cues = extract_cues_from_events(event_df)
-    
+
     # Scaling image points
     scale = 0
-    end_v = voltages["Time(ms)"].iloc[-1] / 1E3
-    end_im = max(images[:][-1])
+    end_v = voltages["Time(ms)"].iloc[-1] / 1e3
+    if len(images.shape) > 1:
+        end_im = max(images[:][-1])
+    else:
+        end_im = images[-1]
     scale = end_v / end_im
     new_images = []
     for ip in range(len(images)):
-        sublist = (np.array(images[ip])*scale).tolist()
+        sublist = (np.array(images[ip]) * scale).tolist()
         new_images.append(sublist)
-    
+
     ## for non linear scaling across time points, correct for each cue
     # if len(event_cues) == len(voltage_cues):
     #     for icue, (e_cue, v_cue) in enumerate(zip(event_cues, voltage_cues)):
@@ -165,6 +169,7 @@ def correct_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame, images):
     #     new_event_cues = extract_cues_from_events(event_df)
     return event_df, new_images
 
+
 def extract_events(event_df: pd.DataFrame):
     # get all events in seconds
     licks = np.array(event_df["Timestamp"][event_df["Events"] == 5] / 1e3)
@@ -182,21 +187,21 @@ def extract_events(event_df: pd.DataFrame):
     return licks, CS1, CS2, CS3, sucrose, milk
 
 
-def get_cell_only_activity(
-    F: list, Fneu: list, is_cell: list, num_planes: int
-):
+def get_cell_only_activity(F: list, Fneu: list, is_cell: list, num_planes: int):
     """
     Returns cell only activity for traces and spikes based on is_cell, 1==cell, 0==not cell in is_cell, for each plane.
 
     """
-    threshold = 0.03 # percentage of F higher than Fneu required to classify as cell 
+    threshold = 0.03  # percentage of F higher than Fneu required to classify as cell
     F_cell = [[] for _ in range(num_planes)]
     Fneu_cell = [[] for _ in range(num_planes)]
 
     for ip in range(num_planes):
         cell_idx = [index for index, value in enumerate(is_cell[ip]) if value[0] == 1]
         for cell in cell_idx:
-            if np.mean(F[ip][cell, :]) > np.mean(Fneu[ip][cell, :]) + threshold * np.mean(Fneu[ip][cell, :]):
+            if np.mean(F[ip][cell, :]) > np.mean(
+                Fneu[ip][cell, :]
+            ) + threshold * np.mean(Fneu[ip][cell, :]):
                 F_cell[ip].append(F[ip][cell, :])
                 Fneu_cell[ip].append(Fneu[ip][cell, :])
 
@@ -251,13 +256,25 @@ def extract_imaging_ts_around_events(CS, im_ts, num_planes: int, interest_interv
         for ip in range(num_planes):
             for interval in interest_intervals[cs_type]:
                 # find the images condition during each interval
-                condition_idx = (im_ts[ip] >= interval[0]) & (im_ts[ip] <= interval[1])
-                # get the image time points for each cue
-                cue_temp = [
-                    i
-                    for i, (ts, condition) in enumerate(zip(im_ts[0], condition_idx))
-                    if condition
-                ]
+                if num_planes == 1:
+                    condition_idx = (im_ts >= interval[0]) & (im_ts <= interval[1])
+                    cue_temp = [
+                        i
+                        for i, (ts, condition) in enumerate(zip(im_ts, condition_idx))
+                        if condition
+                    ]
+                else:
+                    condition_idx = (im_ts[ip] >= interval[0]) & (
+                        im_ts[ip] <= interval[1]
+                    )
+                    # get the image time points for each cue
+                    cue_temp = [
+                        i
+                        for i, (ts, condition) in enumerate(
+                            zip(im_ts[0], condition_idx)
+                        )
+                        if condition
+                    ]
                 # append image time points for each cue under correct CS type and plane
                 im_idx_around_cues[ip][cs_type].append(cue_temp)
     im_idx_around_cues = np.array(im_idx_around_cues)
@@ -284,7 +301,7 @@ def normalize_signal(Fcorr, num_planes: int, norm_by="median"):
         for ip in range(num_planes):
             median = np.median(Fcorr[ip], axis=1)
             mad = stats.median_absolute_deviation(Fcorr[ip], axis=1)
-            Fcorr= 0.6745*(Fcorr[ip] - median[:, None]) / np.median(mad)
+            Fcorr = 0.6745 * (Fcorr[ip] - median[:, None]) / np.median(mad)
     return Fcorr
 
 
@@ -318,7 +335,7 @@ def extract_Fave_around_events(
         F[0][0][im_idx_around_cues[0][0][1]]
     )  # reference frame number equals the first cell's second trial from the first plane
     framespersecond = framenumber // (pre_cue_window + post_cue_window)
-    
+
     for cue_type, cs in enumerate(CS):  # cue_type = 0,1,2 (CS1, CS2, CS3)
         for ip in range(num_planes):
             cue_ts = im_idx_around_cues[ip][
@@ -354,9 +371,7 @@ def reorder_clusters(populationdata, pre_window_size, rawlabels):
     responses = np.nan * np.ones((len(uniquelabels),))
     for l, label in enumerate(uniquelabels):
         responses[l] = np.mean(
-            populationdata[
-                rawlabels == label, pre_window_size : 2 * pre_window_size
-            ]
+            populationdata[rawlabels == label, pre_window_size : 2 * pre_window_size]
         )
     temp = np.argsort(responses).astype(int)[::-1]
     temp = np.array([np.where(temp == a)[0][0] for a in uniquelabels])

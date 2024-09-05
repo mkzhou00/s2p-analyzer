@@ -44,6 +44,7 @@ def tsplot(data, ax, color, label, **kw):
     ax.margins(x=0)
     return ax
 
+
 def standardize_plot_graphics(ax):
     [i.set_linewidth(0.5) for i in ax.spines.values()]
     ax.spines["right"].set_visible(False)
@@ -94,7 +95,7 @@ def plot_raw_licks(CS, licks, before, after):
                 )
                 a.set_xlabel("Time (s)")
                 a.set_title(("CS" + str(cs_type + 1) + cs_sign))
-        a.set_ylim((len(cs), 0))
+        a.set_ylim((0, len(cs)))
     ax[0].set_ylabel("Trials")
     return fig_rawplot
 
@@ -121,6 +122,8 @@ def plot_average_PSTH_around_interest_window(
     sortresponse = np.argsort(np.mean(F[:, sortwindow[0] : sortwindow[1]], axis=1))[
         ::-1
     ]
+    cmin = np.amin(F[0])
+    cmax = np.amax(F[0])
 
     for cue_type in range(len(CStrials)):
         axs[cue_type].set_title(CStrials[cue_type])
@@ -129,8 +132,8 @@ def plot_average_PSTH_around_interest_window(
             F[sortresponse, cue_type * window_size : (cue_type + 1) * window_size],
             ax=ax,
             cmap=plt.get_cmap("coolwarm"),
-            vmax=0.1,
-            vmin=-0.1,
+            vmax=max(cmax, 0.1),
+            vmin=min(-cmax, -0.1),
             cbar=(cue_type == 0),
             cbar_ax=cbar_ax if (cue_type == 0) else None,
             cbar_kws={"label": "Normalized fluorescence"},
@@ -166,7 +169,7 @@ def plot_average_PSTH_around_interest_window(
 
 
 def plot_individual_cells_activity(
-    F, CS, im_idx_around_cues, cells_to_plot, num_planes: int, result_dir
+    F, CS, im_idx_around_cue, cells_to_plot, num_planes: int, plot_till_idx=-1
 ):
     cells_per_plane = [[] for _ in range(num_planes)]
     for cell in cells_to_plot:
@@ -185,16 +188,16 @@ def plot_individual_cells_activity(
 
     for ip in range(num_planes):
         for cell in cells_per_plane[ip]:
-            fig_cell, axs = plt.subplots(len(CS[0]), len(CS), figsize=(10, 10))
+            fig_cell, axs = plt.subplots(len(CS[0]), len(CS), figsize=(6, 6))
             for cue_type, cs in enumerate(CS):
-                cue_ts = im_idx_around_cues[ip][cue_type]
+                cue_ts = im_idx_around_cue[ip][cue_type]
                 if cue_type == 0:
                     flattened_cue_ts = [item for sublist in cue_ts for item in sublist]
                     ymax = np.max(F[ip][cell][flattened_cue_ts])
                     ymin = np.min(F[ip][cell][flattened_cue_ts])
                 for trial in range(len(CS[0])):
                     ax = axs[trial, cue_type]
-                    Ftemp = F[ip][cell][cue_ts[trial]]
+                    Ftemp = F[ip][cell][cue_ts[trial][:plot_till_idx]]
                     ax.spines["top"].set_visible(False)
                     ax.spines["right"].set_visible(False)
                     if cue_type != 0:
@@ -203,7 +206,7 @@ def plot_individual_cells_activity(
                     ax.axvline(30, linestyle="--", color="k", linewidth=0.5)
                     ax.axvline(40, linestyle="--", color="k", linewidth=0.5)
                     ax.axvline(60, linestyle="--", color="k", linewidth=0.5)
-                    ax.plot(Ftemp, linewidth=1, linestyle="-", color="blue")
+                    ax.plot(Ftemp, linewidth=0.5, linestyle="-", color="blue")
                     ax.set_ylim([ymin, ymax])
                     ax.xaxis.set_major_locator(ticker.NullLocator())
                     ax.set_yticks([round(ymin), round(ymax)])
@@ -221,27 +224,83 @@ def plot_individual_cells_activity(
             # fig_cell.tight_layout()
             plt.show(fig_cell)
 
-def plot_individual_trial_activity(
-    F, CS, im_idx_around_cues, cells_to_plot, num_planes: int, result_dir
+
+def plot_individual_trial_average_activity(
+    F, 
+    CStrials,     
+    window_size,
+    pre_window_size,
+    frames_to_reward,
+    cells_to_plot, 
+    framerate,
+    result_dir, 
+    post_window_size=17
 ):
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
+    # cells_per_plane = [[] for _ in range(num_planes)]
+    # for cell in cells_to_plot:
+    #     if cell < len(F[0]):
+    #         cells_per_plane[0].append(cell)
+    #     elif (cell < (len(F[0]) + len(F[1]))) and (cell >= len(F[0])):
+    #         cell = cell - len(F[0])
+    #         cells_per_plane[1].append(cell)
+        # correct for cell number up to 4 planes
+        # elif (cell < (len(F[0]) + len(F[1]) + len(F[2]))) and (cell >= (len(F[0]) + len(F[1]))):
+        #     cell = cell - (len(F[0]) + len(F[1]))
+        #     cells_per_plane[2].append(cell)
+        # elif (cell < (len(F[0]) + len(F[1]) + len(F[2]) + len(F[3]))) and (cell >= (len(F[0]) + len(F[1]) + len(F[2]))):
+        #     cell = cell - (len(F[0]) + len(F[1]) + len(F[2]))
+        #     cells_per_plane[3].append(cell)
+    actual_frames_to_plot = pre_window_size +  post_window_size * framerate
+    for cell in cells_to_plot:
+        fig_cell, axs = plt.subplots(1, len(CStrials), figsize=(6,3), dpi=100)
+        for cue_type in range(len(CStrials)):
+            ymax = np.max(F[cell])
+            ymin = np.min(F[cell])
+            ax = axs[cue_type]
+            Ftemp= F[cell, cue_type*window_size : cue_type*window_size+actual_frames_to_plot]
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            if cue_type != 0:
+                ax.yaxis.set_major_locator(ticker.NullLocator())
+            ax.spines["bottom"].set_visible(False)
+            ax.axvline(pre_window_size, linestyle="--", color="k", linewidth=0.5)
+            ax.axvline(pre_window_size + int(frames_to_reward*1/3), linestyle="--", color="k", linewidth=0.5)
+            ax.axvline(pre_window_size + frames_to_reward, linestyle="--", color="k", linewidth=0.5)
+            ax.plot(Ftemp, linewidth=0.5, linestyle="-", color="blue")
+            ax.set_ylim([ymin, ymax])
+            ax.xaxis.set_major_locator(ticker.NullLocator())
+            ax.set_yticks([round(ymin, 2), round(ymax, 2)])
+            ax.set_yticklabels([round(ymin, 2), round(ymax, 2)], fontsize=8)
+            ax.spines["bottom"].set_visible(True)
+            ax.set_xticks(
+            [0, pre_window_size, pre_window_size + frames_to_reward, actual_frames_to_plot]
+        )
+            ax.set_xticklabels(
+                [
+                    str(int((a - pre_window_size + 0.0) / framerate))
+                    for a in [
+                        0,
+                        pre_window_size,
+                        pre_window_size + frames_to_reward,
+                        actual_frames_to_plot,
+                    ]
+                ]
+            )
+        # ax.set_yticks([])
+        ax.axvline(pre_window_size, linestyle="--", color="k", linewidth=0.5)
+        ax.axvline(
+            pre_window_size + frames_to_reward, linestyle="--", color="k", linewidth=0.5
+        )
+        axs[1].set_xlabel("Time from cue (s)")
+        axs[0].set_ylabel("Normalized signal")
+        axs[0].set_title("CS1+", fontsize=9)
+        axs[1].set_title("CS2+", fontsize=9)
+        axs[2].set_title("CS3-", fontsize=9)
+        # fig_cell.tight_layout()
+        fig_cell.savefig(os.path.join(result_dir, f"Cell_{cell}.png"), format="png")
+        plt.close(fig_cell)
+
+
 def plot_PC_screenplot(pca, x, num_retained_pcs):
 
     fig, ax = plt.subplots(figsize=(2, 2))
@@ -494,7 +553,7 @@ def plot_activity_clusters(
                 temp,
                 ax=ax,
                 color=colors_for_key[tempkey],
-                label=tempkey if (cluster == (len(uniquelabels)-1)) else None,
+                label=tempkey if (cluster == (len(uniquelabels) - 1)) else None,
             )
             ax.axvline(pre_window_size, linestyle="--", color="k", linewidth=0.5)
             ax.axvline(
@@ -521,7 +580,11 @@ def plot_activity_clusters(
                 ax.set_ylim([-0.02, 0.02])
             else:
                 ax.set_yticks([])
-            ax.legend(bbox_to_anchor=(0.94, 0.22), bbox_transform=fig_activity_cluster.transFigure, frameon=False)
+            ax.legend(
+                bbox_to_anchor=(0.94, 0.22),
+                bbox_transform=fig_activity_cluster.transFigure,
+                frameon=False,
+            )
             standardize_plot_graphics(ax)
 
         axs[-1, 0].set_ylabel("Mean fluor")

@@ -147,7 +147,7 @@ class DataLoader:
         if self.num_plane == 1:
             if len(self.im_ts) == 0:
                 for file in os.listdir(self.file_dir):
-                    if file.endswith("000.xml"):
+                    if file.endswith(".xml"):
                         xmlfile = self.file_dir + file
                 xmlfile = get_file_with_type(".xml", self.file_dir)
                 tree = ET.parse(xmlfile)
