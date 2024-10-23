@@ -84,7 +84,7 @@ def extract_cues(event_df: pd.DataFrame, voltages: pd.DataFrame):
     return event_cues, voltage_cues
 
 
-def correct_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame, images):
+def correct_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame, images, numplanes):
     """
     Arduino time drifts (assume linear) w.r.t. computer time. Correct timestamps
     collected on Arduino given corresponding computer timestamps.
@@ -140,8 +140,8 @@ def correct_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame, images):
     # Scaling image points
     scale = 0
     end_v = voltages["Time(ms)"].iloc[-1] / 1e3
-    if len(images.shape) > 1:
-        end_im = max(images[:][-1])
+    if numplanes > 1:
+        end_im = max(images[ip][-1] for ip in range(numplanes))
     else:
         end_im = images[-1]
     scale = end_v / end_im
@@ -308,7 +308,7 @@ def normalize_signal(Fcorr, num_planes: int, norm_by="median"):
 def extract_Fave_around_events(
     CS,
     F,
-    im_idx_around_cues,
+    im_ts,
     num_planes: int,
     pre_cue_window: int,
     post_cue_window: int,
@@ -328,17 +328,27 @@ def extract_Fave_around_events(
     Fcorrected_around_cue with the structure of len(CS), number of cells, timepoints
 
     """
+    
+    # Extract time around each cue and sorted by CS type, shape is numCS --> len trials
+    interest_intervals = extract_interest_time_intervals(
+        CS, pre_cue_window, post_cue_window
+    )
+    # Extract image time points around each cue and sorted by CS type and plane, shape is plane --> numCS --> len trials
+    im_idx_around_cue = extract_imaging_ts_around_events(
+        CS, im_ts, num_planes, interest_intervals
+    )
+
     # F_ave_around_cues = [[] for _ in range(len(CS))]
     F_ave_around_cues_baseline_subtract = [[] for _ in range(len(CS))]
 
     framenumber = len(
-        F[0][0][im_idx_around_cues[0][0][1]]
+        F[0][0][im_idx_around_cue[0][0][1]]
     )  # reference frame number equals the first cell's second trial from the first plane
     framespersecond = framenumber // (pre_cue_window + post_cue_window)
 
     for cue_type, cs in enumerate(CS):  # cue_type = 0,1,2 (CS1, CS2, CS3)
         for ip in range(num_planes):
-            cue_ts = im_idx_around_cues[ip][
+            cue_ts = im_idx_around_cue[ip][
                 cue_type
             ]  # image indexes for all trials in this cue type, holds same for all cells within the plane (trial number x framenumber)
             for cell in range(len(F[ip])):
@@ -358,12 +368,77 @@ def extract_Fave_around_events(
                     cell_F.append(F_temp)
                 # average across cs trials
                 cellave = np.nanmean(np.array(cell_F), axis=0)
-                baseline = np.nanmean(cellave[0 : pre_cue_window * framespersecond])
-                baselinesubtract = list(cellave - baseline)
-                F_ave_around_cues_baseline_subtract[cue_type].append(baselinesubtract)
+                # baseline = np.nanmean(cellave[0 : pre_cue_window * framespersecond])
+                # baselinesubtract = list(cellave - baseline)
+                F_ave_around_cues_baseline_subtract[cue_type].append(cellave)
                 # F_ave_around_cues[cue_type].append(cellave)
     F_ave_around_cues_baseline_subtract = np.array(F_ave_around_cues_baseline_subtract)
     return F_ave_around_cues_baseline_subtract
+
+
+def extract_F_around_events(
+    CS,
+    F,
+    im_ts,
+    num_planes: int,
+    pre_cue_window: int,
+    post_cue_window: int,
+    binsize=1,
+    framerate=30
+):
+    """
+    This function first generates Fcorrected traces around each cues based on images indexes,
+    and append each cell's activity under each cue.
+
+    Args:
+        CS: all CS trials
+        F: Fcorrected trace for all planes all cells
+        im_ts: image timestamps used to calculate image indexes
+        num_planes: number of planes
+
+    Returns:
+    Fcorrected_around_cue with the structure of len(CS), number of cells, timepoints
+
+    """
+    windowsize = pre_cue_window + post_cue_window
+    binframes = binsize * framerate # number of frames to bin over
+    
+    # Extract time around each cue and sorted by CS type, shape is numCS --> len trials
+    interest_intervals = extract_interest_time_intervals(
+        CS, pre_cue_window, post_cue_window
+    )
+    # Extract image time points around each cue and sorted by CS type and plane, shape is plane --> numCS --> len trials
+    im_idx_around_cue = extract_imaging_ts_around_events(
+        CS, im_ts, num_planes, interest_intervals
+    )
+
+    # Create a list for each cs type and each trial, using None to hold the place. Shape is nCS --> ntrial within each CS
+    F_trial = [[] for _ in CS]
+    mintrial_for_decoding = min(len(cs) for cs in CS)
+    
+    for i in range(len(CS)):
+        F_trial[i] = [[] for _ in range(mintrial_for_decoding)]
+
+    for cue_type, cs in enumerate(CS):  # cue_type = 0,1,2 (CS1, CS2, CS3)
+        for ip in range(num_planes):
+            cue_ts = im_idx_around_cue[ip][
+                cue_type
+            ]  # image indexes for all trials in this cue type, holds same for all cells within the plane (trial number x framenumber)
+            for cell in range(len(F[ip])):
+                # cell_F = []
+                for trial in range(mintrial_for_decoding):
+                    F_temp = F[ip][cell][
+                        cue_ts[trial]
+                    ]  # F for cell in the plane, of this trial in this cue type (framenumber x )
+                    F_temp1 = []
+                    for ibin in range(windowsize//binsize):
+                        F_temp1.append(np.mean(F_temp[ibin*binframes:(ibin+1)*binframes])) # bin frames to get the mean value
+                    F_trial[cue_type][trial].append(F_temp1)
+                # F_ave_around_cues[cue_type].append(cellave)
+    F_trial = np.array(F_trial)
+    return F_trial
+
+
 
 
 def reorder_clusters(populationdata, pre_window_size, rawlabels):

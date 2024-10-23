@@ -114,7 +114,7 @@ def parse_args():
         "--pre_cue_window",
         type=float,
         default=3,
-        help="Interested time region before a cue starts. (Second)",
+        help="Interested time region before a cue starts, needs to be negative if including time before cue start (Second)",
     )
     parser.add_argument(
         "--post_cue_window",
@@ -173,8 +173,8 @@ def associate_cells_with_intervals(
 def main():
     # Load data
     args = parse_args()
-    args.data_dir = "Z:\\2p\\experiment1\\MZ_hpc_prism_M8\\d11"
-    args.num_planes = 1
+    args.data_dir = "Z:\\2p\\experiment1\\MZ_hpc_prism_M4\\d10"
+    args.num_planes = 2
     data_loader = DataLoader(args.data_dir, args.num_planes)
 
     # Make a result folder if if didn't exist
@@ -184,7 +184,7 @@ def main():
     file_dir = os.path.join(args.data_dir, "files")
 
     if os.path.exists(os.path.join(file_dir, "F.npy")):
-        Fcorr = np.load(os.path.join(file_dir, "F.npy"))
+        Fcorr = np.load(os.path.join(file_dir, "F.npy"), allow_pickle=True)
     else:
         # Load all necessary variables.
         F = data_loader.get_F()
@@ -213,50 +213,48 @@ def main():
         file_to_save = os.path.join(args.data_dir, "files", "F.npy")
         np.save(file_to_save, Fcorr)
 
+    # # Plot multiple traces
+    fig, axs = plt.subplots(8,1)
+    for i in list(range(8)):
+        axs[i].plot(Fcorr[0][i])
+    fig.savefig(os.path.join(result_dir, "example traces.eps"), format="eps")
+
     # Load behavioral data and timestamps for images and voltages
     event_df = data_loader.get_event_df()  # Arduino
     voltages = data_loader.get_voltages()  # Computer
     im_ts = data_loader.get_im_ts()  # image time stamps in second
     # Correct `event_tf` timestamps.
-    event_df, new_im_ts = correct_timestamps(event_df, voltages, im_ts)
+    event_df, new_im_ts = correct_timestamps(event_df, voltages, im_ts, args.num_planes)
 
     # Extract all event time points from new event_df
     [licks, CS1, CS2, CS3, sucrose, milk] = extract_events(event_df)
     allCS = [CS1, CS2, CS3]
-
-    # Extract time around each cue and sorted by CS type, shape is numCS --> len trials
-    interest_intervals = extract_interest_time_intervals(
-        allCS, args.pre_cue_window, args.post_cue_window
-    )
-    # Extract image time points around each cue and sorted by CS type and plane, shape is plane --> numCS --> len trials
-    im_idx_around_cue = extract_imaging_ts_around_events(
-        allCS, new_im_ts, args.num_planes, interest_intervals
-    )
 
     # Normalize signal
     Fcorr_norm = normalize_signal(
         Fcorr, args.num_planes, "median"
     )  # can be z_score, median, robust_z_score
 
-    # # Extract average Fcorr around each cue in all cuetypes for each cell
+    # # Extract average Fcorr around each cue in all cuetypes for each cell, shape is nCS x nCell x nFrames
     Fcorr_around_cue = extract_Fave_around_events(
         allCS,
         Fcorr_norm,
-        im_idx_around_cue,
+        new_im_ts,
         args.num_planes,
         args.pre_cue_window,
         args.post_cue_window,
     )
+    # reshaping the data, output is nCell x nCS*nFrames
     Fcorr_around_cue = Fcorr_around_cue.transpose(1, 2, 0).reshape(
         Fcorr_around_cue.shape[1], -1, order="F"
-    )  # reshaping the data, output is numcells --> total frames * cutypes in order
+    )  
 
-    ## Plot behavior rasters
-    fig_rawplot = plot_raw_licks(allCS, licks, args.pre_cue_window, 10)
-    plt.close(fig_rawplot)
-    fig_rawplot.savefig(
-        os.path.join(result_dir, "behavior_raster.png"), format="png"
-    )
+    # ## Plot behavior rasters
+    # fig_rawplot = plot_raw_licks(allCS, licks, args.pre_cue_window, 10)
+    # plt.close(fig_rawplot)
+    # fig_rawplot.savefig(
+    #     os.path.join(result_dir, "behavior_raster.png"), format="png"
+    # )
 
     # Initialize parameters for plotting
     window_size = int(
@@ -288,17 +286,18 @@ def main():
     fig_calcium_PSTH.savefig(os.path.join(result_dir, "PSTH.png"), format="png")
     plt.close(fig_calcium_PSTH)
 
-    # # Get the example cells based on sorted response, plot PSTH
+    # Get the example cells based on sorted response, plot PSTH
     example_cells = []
     for cue_type in range(len(args.trial_types)):
         idx_sortresponse = np.argsort(
             np.mean(Fcorr_around_cue[:, cue_type*window_size+sortwindow[0]: cue_type*window_size+sortwindow[1]], axis=1)
         )[::-1]
         example_cells.extend(list(
-            idx_sortresponse[: int(np.floor(0.1 * len(idx_sortresponse)))]
+            idx_sortresponse[: int(np.floor(0.01 * len(idx_sortresponse)))]
         ))
+        
     # # Plot individual cell activities
-    # # plot_after_cue = 10  # only plot up to 6s after the cue
+    # plot_after_cue = 10  # only plot up to 6s after the cue
     plot_individual_trial_average_activity(
         Fcorr_around_cue,
         args.trial_types,
@@ -309,9 +308,9 @@ def main():
         framerate,
         result_dir,
     )
+    
     # plot_individual_cells_activity(
     #     Fcorr_norm, allCS, im_idx_around_cue, example_cells, args.num_planes, plot_till_idx)
-
     # F_example_cells = Fcorr_around_cue[example_cells, :]
     # fig_calcium_PSTH_example_cells = plot_average_PSTH_around_interest_window(
     #     args.trial_types,
