@@ -12,6 +12,9 @@
             "console": "integratedTerminal",
             // "console": "internalConsole",
             "justMyCode": false,
+            "env": {
+                "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "5.0"
+            }
             // "python.termina..intergrated.inheritEnv": false,
             // "python.terminal.activateEnvironment": false,
             // "args": ["--data_dir", "Z:\\2p\\experiment1\\MZ_hpc_prism_M6\\d7\\"]

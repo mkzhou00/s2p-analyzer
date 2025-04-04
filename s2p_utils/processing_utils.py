@@ -3,39 +3,89 @@ import numpy as np
 import scipy.stats as stats
 
 
-def correct_overlapping_cells_across_planes(stat, iscell):
-    cellidx = []
-    for ip in range(len(iscell)):
-        # get the index number of ROIs that is cell (1 in first item of iscell)
-        temp = (iscell[ip] == 1).nonzero()[0]
-        cellidx.append(temp)
+def get_cell_indices(iscell):
+    """ Get indices of cells for each plane. """
+    return [np.where(plane[:, 0] == 1)[0] for plane in iscell]
 
-    xy_plane0 = set()
+
+def get_cell_coordinates(stat):
+    """ Get x, y coordinates as a set of tuples for a given cell. """
+    xpix = stat["xpix"]
+    ypix = stat["ypix"]
+    assert len(xpix) == len(ypix), "xpix and ypix length mismatch!"
+    return set(zip(xpix, ypix))
+
+
+def correct_overlapping_cells_across_planes(stat, iscell, num_planes: int, overlap_threshold=0.8):
+    """
+    Correct overlapping cells across planes.
+    Cells are marked as non-cells in iscell if they have > overlap_threshold overlap.
+    
+    Args:
+        stat: List of dictionaries containing cell coordinates per plane.
+        iscell: List of arrays indicating whether each ROI is a cell.
+        num_planes: Total number of planes.
+        overlap_threshold: Fraction of overlap to be considered the same cell.
+        
+    Returns:
+        overlapping_cells: List of overlapping cell pairs [cell_in_plane_i, cell_in_plane_i+1].
+    """
+    cellidx = get_cell_indices(iscell)
     overlapping_cells = []
-    for icell in cellidx[0]:
-        assert len(stat[0][0][icell]["xpix"][0][0][0]) == len(
-            stat[0][0][icell]["ypix"][0][0][0]
-        )
-        xpix = stat[0][0][icell]["xpix"][0][0][0]
-        ypix = stat[0][0][icell]["ypix"][0][0][0]
-        reference_cell_coordinates = set()
-        for ix, iy in zip(xpix, ypix):
-            reference_cell_coordinates.add((ix, iy))
-        for ic in cellidx[1]:
-            assert len(stat[1][0][ic]["xpix"][0][0][0]) == len(
-                stat[1][0][ic]["ypix"][0][0][0]
-            )
-            x = stat[1][0][ic]["xpix"][0][0][0]
-            y = stat[1][0][ic]["ypix"][0][0][0]
-            overlap_ct = 0
-            for ix, iy in zip(x, y):
-                if (ix, iy) in reference_cell_coordinates:
-                    overlap_ct += 1
-            if (overlap_ct / len(x)) >= 0.8:
-                iscell[1][ic][0] = 0
-                overlapping_cells.append([icell, ic])
+
+    for ip in range(num_planes - 1):
+        for icell in cellidx[ip]:
+            ref_coords = get_cell_coordinates(stat[ip][icell])
+
+            for ic in cellidx[ip + 1]:
+                target_coords = get_cell_coordinates(stat[ip + 1][ic])
+
+                # Calculate overlap using set intersection
+                overlap = ref_coords & target_coords
+                overlap_fraction = len(overlap) / len(target_coords)
+
+                # Mark as non-cell if overlap exceeds threshold
+                if overlap_fraction >= overlap_threshold:
+                    iscell[ip + 1][ic][0] = 0
+                    overlapping_cells.append([icell, ic])
 
     return overlapping_cells
+
+
+# def correct_overlapping_cells_across_planes(stat, iscell, num_planes:int):
+#     cellidx = []
+#     for ip in range(len(iscell)):
+#         # get the index number of ROIs that is cell (1 in first item of iscell)
+#         temp = (iscell[ip] == 1).nonzero()[0]
+#         cellidx.append(temp)
+
+#     xy_plane0 = set()
+#     overlapping_cells = []
+#     for ip in range(num_planes-1):
+#         for icell in cellidx[ip]:
+#             assert len(stat[ip][icell]["xpix"]) == len(
+#                 stat[ip][icell]["ypix"]
+#             )
+#             xpix = stat[ip][icell]["xpix"]
+#             ypix = stat[ip][icell]["ypix"]
+#             reference_cell_coordinates = set()
+#             for ix, iy in zip(xpix, ypix):
+#                 reference_cell_coordinates.add((ix, iy))
+#             for ic in cellidx[ip+1]:
+#                 assert len(stat[ip+1][ic]["xpix"]) == len(
+#                     stat[ip+1][ic]["ypix"]
+#                 )
+#                 x = stat[ip+1][ic]["xpix"]
+#                 y = stat[ip+1][ic]["ypix"]
+#                 overlap_ct = 0
+#                 for ix, iy in zip(x, y):
+#                     if (ix, iy) in reference_cell_coordinates:
+#                         overlap_ct += 1
+#                 if (overlap_ct / len(x)) >= 0.8:
+#                     iscell[ip+1][ic][0] = 0
+#                     overlapping_cells.append([icell, ic])
+
+#     return overlapping_cells
 
 
 def extract_cues_from_events(event_df: pd.DataFrame) -> pd.DataFrame:
@@ -84,7 +134,7 @@ def extract_cues(event_df: pd.DataFrame, voltages: pd.DataFrame):
     return event_cues, voltage_cues
 
 
-def correct_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame, images, numplanes):
+def correct_timestamps(event_df: pd.DataFrame, images, numplanes, imaging_system="INSS", voltages=None, last_imts=None):
     """
     Arduino time drifts (assume linear) w.r.t. computer time. Correct timestamps
     collected on Arduino given corresponding computer timestamps.
@@ -96,78 +146,71 @@ def correct_timestamps(event_df: pd.DataFrame, voltages: pd.DataFrame, images, n
         voltages[in]: Corresponding timestamps collected on computer.
         images[in/out]: image timestamps collected on computer
     """
-    ### Voltages (computer received)
+    if imaging_system == "Bruker":
+        ### Voltages (computer received)
 
-    # Extract in-session ts between start (1) and end (0).
-    v_in_session = voltages[voltages[" TTL1"] > 3]
+        # Extract in-session ts between start (1) and end (0).
+        v_in_session = voltages[voltages[" TTL1"] > 3]
 
-    # Get start ts.
-    v_session_first_ts = v_in_session.iloc[0][0]
+        # Get start ts.
+        v_session_first_ts = v_in_session.iloc[0][0]
 
-    # Subtract all ts using first timestamp, effectively making event starts at 0.
-    v_in_session["Time(ms)"] = v_in_session["Time(ms)"] - v_session_first_ts
+        # Subtract all ts using first timestamp, effectively making event starts at 0.
+        v_in_session["Time(ms)"] = v_in_session["Time(ms)"] - v_session_first_ts
 
-    # Do the same thing for Events (on Arduino), setting event start at 0.
-    e_session_start = event_df.loc[event_df["Events"] == 1]
-    event_df["Timestamp"] = (
-        event_df["Timestamp"].to_numpy() - e_session_start["Timestamp"].to_numpy()
-    )
+        # Do the same thing for Events (on Arduino), setting event start at 0.
+        e_session_start = event_df.loc[event_df["Events"] == 1]
+        event_df["Timestamp"] = (
+            event_df["Timestamp"].to_numpy() - e_session_start["Timestamp"].to_numpy()
+        )
 
-    # Now that both data starts at 0, correct the linear drift based on event cues.
-    event_cues, voltage_cues = extract_cues(event_df, voltages)
-    assert len(event_cues) > 0
+        # Now that both data starts at 0, correct the linear drift based on event cues.
+        event_cues, voltage_cues = extract_cues(event_df, voltages)
+        assert len(event_cues) > 0
 
-    # if len(voltage_cues) > 0:
-    #     ## Linear scaling across time points for each cue, with accurate TTL2 signal
-    #     scale = 0
-    #     for e_cue, v_cue in zip(event_cues, voltage_cues):
-    #         scale += v_cue / e_cue
-    #     scale /= len(event_cues)
-    #     # Correct for linear scale.
-    #     event_df["Timestamp"] *= scale
-    #     # new_event_cues = extract_cues_from_events(event_df)
-    # else:
-    #     ## Linear scaling just using start and end time points, this is for when TTL2 is not working well
+        # if len(voltage_cues) > 0:
+        #     ## Linear scaling across time points for each cue, with accurate TTL2 signal
+        #     scale = 0
+        #     for e_cue, v_cue in zip(event_cues, voltage_cues):
+        #         scale += v_cue / e_cue
+        #     scale /= len(event_cues)
+        #     # Correct for linear scale.
+        #     event_df["Timestamp"] *= scale
+        #     # new_event_cues = extract_cues_from_events(event_df)
+        # else:
+        ## Linear scaling just using start and end time points, this is for when TTL2 is not working well
 
-    # Scaling events
-    scale = 0
-    end_v = v_in_session["Time(ms)"].iloc[-1]
-    end_e = event_df["Timestamp"].iloc[-1]
-    scale = end_v / end_e
-    event_df["Timestamp"] *= scale
-    # new_event_cues = extract_cues_from_events(event_df)
+        # Scaling events
+        scale = 0
+        end_v = v_in_session["Time(ms)"].iloc[-1]
+        end_e = event_df["Timestamp"].iloc[-1]
+        scale = end_v / end_e
+        event_df["Timestamp"] *= scale
+        # new_event_cues = extract_cues_from_events(event_df)
 
-    # Scaling image points
-    scale = 0
-    end_v = voltages["Time(ms)"].iloc[-1] / 1e3
-    if numplanes > 1:
-        end_im = max(images[ip][-1] for ip in range(numplanes))
+        # Scaling image points
+        scale = 0
+        end_v = voltages["Time(ms)"].iloc[-1] / 1e3
+        if numplanes > 1:
+            end_im = max(images[ip][-1] for ip in range(numplanes))
+        else:
+            end_im = images[-1]
+        scale = end_v / end_im
+        new_images = []
+        for ip in range(len(images)):
+            sublist = (np.array(images[ip]) * scale).tolist()
+            new_images.append(sublist)    
+        
+        return event_df, new_images
+    
     else:
-        end_im = images[-1]
-    scale = end_v / end_im
-    new_images = []
-    for ip in range(len(images)):
-        sublist = (np.array(images[ip]) * scale).tolist()
-        new_images.append(sublist)
-
-    ## for non linear scaling across time points, correct for each cue
-    # if len(event_cues) == len(voltage_cues):
-    #     for icue, (e_cue, v_cue) in enumerate(zip(event_cues, voltage_cues)):
-    #         if icue < (len(event_cues) - 1):
-    #             scale = v_cue / e_cue
-    #             idx_events_after_cue = event_df.loc[
-    #                 (event_df["Timestamp"] >= e_cue)
-    #                 & (event_df["Timestamp"] < (event_cues[icue + 1]))
-    #             ].index.tolist()
-    #             event_df["Timestamp"][idx_events_after_cue] *= scale
-    #         elif icue == (len(event_cues) - 1):
-    #             scale = v_cue / e_cue
-    #             idx_events_after_cue = event_df.loc[
-    #                 (event_df["Timestamp"] >= e_cue)
-    #             ].index.tolist()
-    #             event_df["Timestamp"][idx_events_after_cue] *= scale
-    #     new_event_cues = extract_cues_from_events(event_df)
-    return event_df, new_images
+        scale = 0
+        end_im = images
+        end_e = event_df["Timestamp"].iloc[-1] / 1E3
+        scale = end_im / end_e
+        event_df["Timestamp"] *= scale    
+        
+        return event_df
 
 
 def extract_events(event_df: pd.DataFrame):
@@ -177,17 +220,17 @@ def extract_events(event_df: pd.DataFrame):
     CS2 = np.array(event_df["Timestamp"][event_df["Events"] == 16] / 1e3)
     CS3 = np.array(event_df["Timestamp"][event_df["Events"] == 17] / 1e3)
     sucrose = np.array(
-        event_df["Timestamp"][(event_df["Events"] == 10) & (event_df["Reward"] == 1)]
+        event_df["Timestamp"][(event_df["Events"] == 10) & (event_df["Reward"] == 0)]
         / 1e3
     )
     milk = np.array(
-        event_df["Timestamp"][(event_df["Events"] == 9) & (event_df["Reward"] == 1)]
+        event_df["Timestamp"][(event_df["Events"] == 9) & (event_df["Reward"] == 0)]
         / 1e3
     )
     return licks, CS1, CS2, CS3, sucrose, milk
 
 
-def get_cell_only_activity(F: list, Fneu: list, is_cell: list, num_planes: int):
+def get_cell_only_activity(F: list, Fneu: list, spks:list, is_cell: list, num_planes: int):
     """
     Returns cell only activity for traces and spikes based on is_cell, 1==cell, 0==not cell in is_cell, for each plane.
 
@@ -195,6 +238,7 @@ def get_cell_only_activity(F: list, Fneu: list, is_cell: list, num_planes: int):
     threshold = 0.03  # percentage of F higher than Fneu required to classify as cell
     F_cell = [[] for _ in range(num_planes)]
     Fneu_cell = [[] for _ in range(num_planes)]
+    spks_cell = [[] for _ in range(num_planes)]
 
     for ip in range(num_planes):
         cell_idx = [index for index, value in enumerate(is_cell[ip]) if value[0] == 1]
@@ -204,8 +248,9 @@ def get_cell_only_activity(F: list, Fneu: list, is_cell: list, num_planes: int):
             ) + threshold * np.mean(Fneu[ip][cell, :]):
                 F_cell[ip].append(F[ip][cell, :])
                 Fneu_cell[ip].append(Fneu[ip][cell, :])
+                spks_cell[ip].append(spks[ip][cell,:])
 
-    return F_cell, Fneu_cell
+    return F_cell, Fneu_cell, spks_cell
 
 
 def get_corrected_F(F_cell: list, Fneu_cell: list, num_planes: int, coeff: float):
@@ -255,26 +300,26 @@ def extract_imaging_ts_around_events(CS, im_ts, num_planes: int, interest_interv
     for cs_type, cs in enumerate(CS):
         for ip in range(num_planes):
             for interval in interest_intervals[cs_type]:
-                # find the images condition during each interval
-                if num_planes == 1:
-                    condition_idx = (im_ts >= interval[0]) & (im_ts <= interval[1])
-                    cue_temp = [
-                        i
-                        for i, (ts, condition) in enumerate(zip(im_ts, condition_idx))
-                        if condition
-                    ]
-                else:
-                    condition_idx = (im_ts[ip] >= interval[0]) & (
-                        im_ts[ip] <= interval[1]
+                # # find the images condition during each interval
+                # if num_planes == 1:
+                #     condition_idx = (im_ts >= interval[0]) & (im_ts <= interval[1])
+                #     cue_temp = [
+                #         i
+                #         for i, (ts, condition) in enumerate(zip(im_ts, condition_idx))
+                #         if condition
+                #     ]
+                # else:
+                condition_idx = (im_ts[ip] >= interval[0]) & (
+                    im_ts[ip] <= interval[1]
+                )
+                # get the image time points for each cue
+                cue_temp = [
+                    i
+                    for i, (ts, condition) in enumerate(
+                        zip(im_ts[0], condition_idx)
                     )
-                    # get the image time points for each cue
-                    cue_temp = [
-                        i
-                        for i, (ts, condition) in enumerate(
-                            zip(im_ts[0], condition_idx)
-                        )
-                        if condition
-                    ]
+                    if condition
+                ]
                 # append image time points for each cue under correct CS type and plane
                 im_idx_around_cues[ip][cs_type].append(cue_temp)
     im_idx_around_cues = np.array(im_idx_around_cues)

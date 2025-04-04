@@ -1,13 +1,17 @@
 """
 READ BEFORE START:
-
-    DATA format:
-    - In each animal's file, create a subfoler for each day (called d1, d2 etc)
-    - In each day's subfolder, have a folder called "files" containing all the recorded time points, voltage recording and behavior
-    - suite2p folder is created automatically with suite2p, needs to have mat file for all information
-    - can have the reference folder in this subfolder as well
-    - running this file will make a result folder in this folder
-
+    FOR BRUKER ANALYSIS:
+        Data format:
+        - In each animal's file, create a subfoler for each day (called d1, d2 etc)
+        - In each day's subfolder, have a folder called "files" containing all the recorded time points (xml), voltage recording (excel) and behavior (mat)
+        - suite2p folder is created automatically with suite2p, needs to have mat file for all information
+        - can have the reference folder in this subfolder as well
+        - running this file will make a result folder in this folder
+    FOR INSS ANALYSIS:
+        Data format:
+        - In each animal's file, create a subfoler for each day (called d1, d2 etc)
+        - In each day's folder, should have the tiff image containing all the frames, the behavioral data as mat file, suite2p folder containing the preproccessed 
+        files, and 
 """
 
 import argparse
@@ -83,7 +87,13 @@ logger = logging.getLogger(__name__)
 def parse_args():
     """Parses arguments from command line."""
     parser = argparse.ArgumentParser(description="Suite2p result analyzer.")
-
+    
+    parser.add_argument(
+        "--imaging_system",
+        type=str,
+        default="INSS",
+        help="Which scope imaged at: Bruker or INSS"
+    )
     parser.add_argument(
         "--data_dir",
         type=str,
@@ -103,6 +113,12 @@ def parse_args():
         type=int,
         default="4",
         help="Number of planes recorded during each session",
+    )
+    parser.add_argument(
+        "--num_flyback",
+        type=int,
+        default=0,
+        help="Number of fly back planes at the end of z stack",
     )
     parser.add_argument(
         "--min_cell_prob",
@@ -173,9 +189,12 @@ def associate_cells_with_intervals(
 def main():
     # Load data
     args = parse_args()
-    args.data_dir = "Z:\\2p\\experiment1\\MZ_hpc_prism_M4\\d10"
-    args.num_planes = 2
-    data_loader = DataLoader(args.data_dir, args.num_planes)
+    args.data_dir = "Z:\\2p\\experiment1\\MZ_CA1_WD_F3\\d7"
+    args.num_planes = 4
+    args.num_flyback = 0
+    # args.imaging_system = "INSS"
+    args.imaging_system = "Bruker"
+    data_loader = DataLoader(args.data_dir, args.num_planes, args.num_flyback, args.imaging_system)
 
     # Make a result folder if if didn't exist
     result_dir = os.path.join(args.data_dir, args.result_folder)
@@ -192,15 +211,15 @@ def main():
         stat = data_loader.get_stat()
         is_cell = data_loader.get_is_cell()
         # ops = data_loader.get_ops()
-        # spks = data_loader.get_spks()
+        spks = data_loader.get_spks()
 
         ## Preprocessing steps:
         # Remove overlapping cells across planes
         if args.num_planes > 1:
-            overlapping_cells = correct_overlapping_cells_across_planes(stat, is_cell)
+            overlapping_cells = correct_overlapping_cells_across_planes(stat, is_cell, args.num_planes)
 
         # Get F_cell and Fneu_cell only activity
-        F_cell, Fneu_cell = get_cell_only_activity(F, Fneu, is_cell, args.num_planes)
+        F_cell, Fneu_cell, spks_cell = get_cell_only_activity(F, Fneu, spks, is_cell, args.num_planes)
 
         # Get neuropil corrected F with neuropil coefficient
         assert len(F_cell) == len(
@@ -210,24 +229,31 @@ def main():
         for ip in range(args.num_planes):
             assert len(F_cell[ip]) == len(Fcorr[ip])
 
-        file_to_save = os.path.join(args.data_dir, "files", "F.npy")
-        np.save(file_to_save, Fcorr)
+        F_to_save = os.path.join(args.data_dir, "files", "F.npy")
+        np.save(F_to_save, Fcorr)
+        S_to_save = os.path.join(args.data_dir, "files", "spks.npy")
+        np.save(S_to_save, spks_cell)
 
     # # Plot multiple traces
-    fig, axs = plt.subplots(8,1)
-    for i in list(range(8)):
-        axs[i].plot(Fcorr[0][i])
-    fig.savefig(os.path.join(result_dir, "example traces.eps"), format="eps")
+    # fig, axs = plt.subplots(8,1)
+    # for i in list(range(8)):
+    #     axs[i].plot(Fcorr[0][i])
+    # fig.savefig(os.path.join(result_dir, "example traces.eps"), format="eps")
 
     # Load behavioral data and timestamps for images and voltages
     event_df = data_loader.get_event_df()  # Arduino
-    voltages = data_loader.get_voltages()  # Computer
-    im_ts = data_loader.get_im_ts()  # image time stamps in second
-    # Correct `event_tf` timestamps.
-    event_df, new_im_ts = correct_timestamps(event_df, voltages, im_ts, args.num_planes)
+    im_ts, last_imts = data_loader.get_im_ts()  # image time stamps in second
+    
+    # # Correct `event_df` and imaging timestamps based on voltage recordings for Bruker
+    if args.imaging_system == "Bruker":
+        voltages = data_loader.get_voltages()  # Computer
+        event_df, im_ts = correct_timestamps(event_df, im_ts, args.num_planes, args.imaging_system, voltages)
+    elif args.imaging_system == "INSS":
+        # Correct event_df based on imaging timestamps for INSS
+        event_df = correct_timestamps(event_df, last_imts, args.num_planes, args.imaging_system)
 
     # Extract all event time points from new event_df
-    [licks, CS1, CS2, CS3, sucrose, milk] = extract_events(event_df)
+    [licks, CS1, CS2, CS3, sucrose, umami] = extract_events(event_df)
     allCS = [CS1, CS2, CS3]
 
     # Normalize signal
@@ -239,7 +265,7 @@ def main():
     Fcorr_around_cue = extract_Fave_around_events(
         allCS,
         Fcorr_norm,
-        new_im_ts,
+        im_ts,
         args.num_planes,
         args.pre_cue_window,
         args.post_cue_window,
@@ -248,7 +274,21 @@ def main():
     Fcorr_around_cue = Fcorr_around_cue.transpose(1, 2, 0).reshape(
         Fcorr_around_cue.shape[1], -1, order="F"
     )  
-
+    
+    # # Normalize inferred spike activities 
+    # spks_norm = normalize_signal(spks_cell, args.num_planes, "z_score")
+    # Spks_around_cue = extract_Fave_around_events(
+    #     allCS,
+    #     spks_norm,
+    #     im_ts,
+    #     args.num_planes,
+    #     args.pre_cue_window,
+    #     args.post_cue_window,
+    # )
+    # # reshaping the data, output is nCell x nCS*nFrames
+    # Spks_around_cue = Spks_around_cue.transpose(1, 2, 0).reshape(
+    #     Spks_around_cue.shape[1], -1, order="F"
+    # )  
     # ## Plot behavior rasters
     # fig_rawplot = plot_raw_licks(allCS, licks, args.pre_cue_window, 10)
     # plt.close(fig_rawplot)
@@ -260,12 +300,11 @@ def main():
     window_size = int(
         Fcorr_around_cue.shape[1] / len(args.trial_types)
     )  # total frame for one cue, inherited in the Fcorr_around_the_cue
-    if args.num_planes == 1:
-        framerate = np.round(1 / ((im_ts[-1] - im_ts[0]) / len(im_ts))).astype(int)
-    else:
-        framerate = np.round(1 / ((im_ts[0][-1] - im_ts[0][0]) / len(im_ts[0]))).astype(
-            int
-        )
+    # if args.num_planes == 1:
+    #     framerate = np.round(1 / ((im_ts[-1] - im_ts[0]) / len(im_ts))).astype(int)
+    # else:
+    framerate = np.round(1 / ((im_ts[0][-1] - im_ts[0][0]) / len(im_ts[0]))).astype(
+            int)
     frames_to_reward = args.delay_to_reward * framerate
     pre_window_size = args.pre_cue_window * framerate
     sortwindow = [

@@ -262,13 +262,13 @@ def do_decoding(X, y):
     scores = cross_val_score(decoder, X, y, cv=5)  # 5-fold cross-validation    
     y_pred = decoder.predict(x_test)
     accuracy = accuracy_score(y_test, y_pred)
-    return scores.mean(), decoder.score(x_test, y_test), accuracy
+    return scores.mean(), accuracy
 
 
 def main():
     args = parse_args()
-    args.data_dir = "Z:\\2p\\experiment1\\MZ_hpc_prism_M6\\d6"
-    args.num_planes = 4
+    args.data_dir = "Z:\\2p\\experiment1\\MZ_hpc_prism_M4\\d15"
+    args.num_planes = 2
     # animals = ['MZ_hpc_prism_M6']
     # sessions = ['d6'] 
     data_loader = DataLoader(args.data_dir, args.num_planes)
@@ -307,7 +307,7 @@ def main():
         Fcorr_norm,
         new_im_ts,
         args.num_planes,
-        -1,
+        0,
         3,
         framerate=framerate
     )
@@ -328,10 +328,10 @@ def main():
     y3 = np.array([0] * ntrial + [1] * ntrial) 
     
 
-    s1, s1a, a1 = do_decoding(x1, y1)
-    s2, s2a, a2 = do_decoding(x2, y2)
-    s3, s3a, a3 = do_decoding(x3, y3)    
-    print(s3, s3a, a3)
+    s1, a1 = do_decoding(x1, y1)
+    s2, a2 = do_decoding(x2, y2)
+    s3, a3 = do_decoding(x3, y3)    
+    print(s3, a3)
 
 
 
