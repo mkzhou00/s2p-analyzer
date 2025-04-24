@@ -67,6 +67,7 @@ from s2p_utils.processing_utils import (
     normalize_signal,
     extract_Fave_around_events,
     reorder_clusters,
+    downsample_data
 )
 from plot_utils import (
     plot_raw_licks,
@@ -145,7 +146,7 @@ def parse_args():
         help="Number of seconds from cue onset to reward onset",
     )
     parser.add_argument(
-        "--framerate", type=int, default=5, help="Average frame rate, 5hz"
+        "--framerate", type=int, default=5, help="Targetted frame rate for analysis across animals across days, 5hz"
     )
     parser.add_argument(
         "--trial_types",
@@ -189,19 +190,22 @@ def associate_cells_with_intervals(
 def main():
     # Load data
     args = parse_args()
-    args.data_dir = "Z:\\2p\\experiment1\\MZ_CA1_WD_F3\\d7"
-    args.num_planes = 4
+    args.data_dir = "Z:\\2p\\experiment1\\JB_55\\d1"
+    args.num_planes = 1
     args.num_flyback = 0
-    # args.imaging_system = "INSS"
-    args.imaging_system = "Bruker"
+    args.imaging_system = "INSS"
+    # args.imaging_system = "Bruker"
     data_loader = DataLoader(args.data_dir, args.num_planes, args.num_flyback, args.imaging_system)
+    
 
     # Make a result folder if if didn't exist
     result_dir = os.path.join(args.data_dir, args.result_folder)
     if not os.path.exists(result_dir):
         os.makedirs(result_dir)
     file_dir = os.path.join(args.data_dir, "files")
-
+    # Check if files folder exist
+    assert os.path.exists(file_dir), "Forgot to make a files folder :/"
+    
     if os.path.exists(os.path.join(file_dir, "F.npy")):
         Fcorr = np.load(os.path.join(file_dir, "F.npy"), allow_pickle=True)
     else:
@@ -252,17 +256,49 @@ def main():
         # Correct event_df based on imaging timestamps for INSS
         event_df = correct_timestamps(event_df, last_imts, args.num_planes, args.imaging_system)
 
-    # Extract all event time points from new event_df
+    # # Extract all event time points from new event_df
     [licks, CS1, CS2, CS3, sucrose, umami] = extract_events(event_df)
     allCS = [CS1, CS2, CS3]
 
+    # Downsample Fcorr to 5hz if not already
+    current_framerate = np.round(1 / ((im_ts[0][-1] - im_ts[0][0]) / len(im_ts[0]))).astype(
+        int)
+    if current_framerate != args.framerate:
+        Fcorr_downsampled, new_im_ts = downsample_data(Fcorr, im_ts, current_framerate, args.framerate)
+        F_to_save = os.path.join(args.data_dir, "files", "F_5hz.npy")
+        np.save(F_to_save, Fcorr_downsampled)
+        ts_to_save = os.path.join(args.data_dir, "files", "timestamps_5hz.npy") 
+        np.save(ts_to_save, new_im_ts)    
+    else:
+        ts_to_save = os.path.join(args.data_dir, "files", "timestamps_5hz.npy") 
+        np.save(ts_to_save, im_ts)    
+               
+    # Normalize signal
+    Fcorr_norm_down = normalize_signal(
+        Fcorr_downsampled, args.num_planes, "median"
+    )  # can be z_score, median, robust_z_score
+
+    # # Extract average Fcorr around each cue in all cuetypes for each cell, shape is nCS x nCell x nFrames
+    Fcorr_around_cue_down = extract_Fave_around_events(
+        allCS,
+        Fcorr_norm_down,
+        new_im_ts,
+        args.num_planes,
+        args.pre_cue_window,
+        args.post_cue_window,
+    )
+    # reshaping the data, output is nCell x nCS*nFrames
+    Fcorr_around_cue_down = Fcorr_around_cue_down.transpose(1, 2, 0).reshape(
+        Fcorr_around_cue_down.shape[1], -1, order="F"
+    )  
+    
     # Normalize signal
     Fcorr_norm = normalize_signal(
         Fcorr, args.num_planes, "median"
     )  # can be z_score, median, robust_z_score
 
     # # Extract average Fcorr around each cue in all cuetypes for each cell, shape is nCS x nCell x nFrames
-    Fcorr_around_cue = extract_Fave_around_events(
+    Fcorr_around_cue= extract_Fave_around_events(
         allCS,
         Fcorr_norm,
         im_ts,
@@ -274,6 +310,9 @@ def main():
     Fcorr_around_cue = Fcorr_around_cue.transpose(1, 2, 0).reshape(
         Fcorr_around_cue.shape[1], -1, order="F"
     )  
+    
+    plt.plot(Fcorr_around_cue[0])
+    plt.plot(Fcorr_around_cue_down[0])
     
     # # Normalize inferred spike activities 
     # spks_norm = normalize_signal(spks_cell, args.num_planes, "z_score")
@@ -489,6 +528,7 @@ def main():
         transformed_data[:, :num_retained_pcs], model.labels_
     )
     fig_silouette.savefig(os.path.join(result_dir, "silouette.png"), format="png")
+    plt.close(fig_silouette)
 
     # Plot activity clusters under each CS
     fig_activity_cluster = plot_activity_clusters(
@@ -505,13 +545,14 @@ def main():
     fig_activity_cluster.savefig(
         os.path.join(result_dir, "activity_clusters.png"), format="png"
     )
-
+    plt.close(fig_activity_cluster)
+    
     # Plot all cluster pairs
     fig_cluster_pairs = plot_cluster_pairs(
         transformed_data, uniquelabels, newlabels, num_retained_pcs
     )
     fig_cluster_pairs.savefig(os.path.join(result_dir, "clusters.png"), format="png")
-
+    plt.close(fig_cluster_pairs)
 
 if __name__ == "__main__":
     main()

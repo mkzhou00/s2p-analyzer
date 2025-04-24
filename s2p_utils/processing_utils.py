@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import scipy.stats as stats
-
+from scipy.interpolate import interp1d
 
 def get_cell_indices(iscell):
     """ Get indices of cells for each plane. """
@@ -134,7 +134,7 @@ def extract_cues(event_df: pd.DataFrame, voltages: pd.DataFrame):
     return event_cues, voltage_cues
 
 
-def correct_timestamps(event_df: pd.DataFrame, images, numplanes, imaging_system="INSS", voltages=None, last_imts=None):
+def correct_timestamps(event_df: pd.DataFrame, images, numplanes, imaging_system="INSS", voltages=None):
     """
     Arduino time drifts (assume linear) w.r.t. computer time. Correct timestamps
     collected on Arduino given corresponding computer timestamps.
@@ -168,26 +168,31 @@ def correct_timestamps(event_df: pd.DataFrame, images, numplanes, imaging_system
         event_cues, voltage_cues = extract_cues(event_df, voltages)
         assert len(event_cues) > 0
 
-        # if len(voltage_cues) > 0:
-        #     ## Linear scaling across time points for each cue, with accurate TTL2 signal
-        #     scale = 0
-        #     for e_cue, v_cue in zip(event_cues, voltage_cues):
-        #         scale += v_cue / e_cue
-        #     scale /= len(event_cues)
-        #     # Correct for linear scale.
-        #     event_df["Timestamp"] *= scale
-        #     # new_event_cues = extract_cues_from_events(event_df)
-        # else:
-        ## Linear scaling just using start and end time points, this is for when TTL2 is not working well
+        ## Linear scaling just using start and end time points from voltage and events
+        # scale = 0
+        # end_v = v_in_session["Time(ms)"].iloc[-1]
+        # end_e = event_df["Timestamp"].iloc[-1]
+        # scale = end_v / end_e
+        # event_df["Timestamp"] *= scale
 
-        # Scaling events
-        scale = 0
-        end_v = v_in_session["Time(ms)"].iloc[-1]
-        end_e = event_df["Timestamp"].iloc[-1]
-        scale = end_v / end_e
-        event_df["Timestamp"] *= scale
-        # new_event_cues = extract_cues_from_events(event_df)
-
+        ## Non linear scaling across time points, correct for each cue
+        if len(event_cues) == len(voltage_cues):
+            for icue, (e_cue, v_cue) in enumerate(zip(event_cues, voltage_cues)):
+                if icue < (len(event_cues) - 1):
+                    scale = v_cue / e_cue
+                    idx_events_after_cue = event_df.loc[
+                        (event_df["Timestamp"] >= e_cue)
+                        & (event_df["Timestamp"] < (event_cues[icue + 1]))
+                    ].index.tolist()
+                    event_df["Timestamp"][idx_events_after_cue] *= scale
+                elif icue == (len(event_cues) - 1):
+                    scale = v_cue / e_cue
+                    idx_events_after_cue = event_df.loc[
+                        (event_df["Timestamp"] >= e_cue)
+                    ].index.tolist()
+                    event_df["Timestamp"][idx_events_after_cue] *= scale
+            new_event_cues = extract_cues_from_events(event_df)
+        
         # Scaling image points
         scale = 0
         end_v = voltages["Time(ms)"].iloc[-1] / 1e3
@@ -200,7 +205,7 @@ def correct_timestamps(event_df: pd.DataFrame, images, numplanes, imaging_system
         for ip in range(len(images)):
             sublist = (np.array(images[ip]) * scale).tolist()
             new_images.append(sublist)    
-        
+
         return event_df, new_images
     
     else:
@@ -223,11 +228,12 @@ def extract_events(event_df: pd.DataFrame):
         event_df["Timestamp"][(event_df["Events"] == 10) & (event_df["Reward"] == 0)]
         / 1e3
     )
-    milk = np.array(
-        event_df["Timestamp"][(event_df["Events"] == 9) & (event_df["Reward"] == 0)]
-        / 1e3
-    )
+    milk = np.array(event_df["Timestamp"][
+        (event_df["Events"].isin([8, 9])) & (event_df["Reward"] == 0)] / 1e3)
+    
     return licks, CS1, CS2, CS3, sucrose, milk
+
+    
 
 
 def get_cell_only_activity(F: list, Fneu: list, spks:list, is_cell: list, num_planes: int):
@@ -499,3 +505,48 @@ def reorder_clusters(populationdata, pre_window_size, rawlabels):
         [temp[a] for a in list(np.digitize(rawlabels, uniquelabels) - 1)]
     )
     return outputlabels
+
+
+def downsample_data(F, im_ts, current_rate, target_rate):
+   
+    F_downsampled = []
+    im_ts_downsampled = []
+    
+    for ip, F_plane in enumerate(F):
+        n_cells, n_timepoints = np.array(F_plane).shape
+        
+        # If the current rate can be evenly divided by the target framerate, then average frames and use the first timestamp
+        if np.remainder(current_rate, target_rate) == 0:
+            bin_size = int(np.divide(current_rate, target_rate))
+            
+            # only include the first time point in each bin
+            t_orig = im_ts[ip]
+            new_n_timepoints = len(t_orig) // bin_size
+            t_new = t_orig[::bin_size][:new_n_timepoints]     
+                   
+            F_down = np.zeros((n_cells, new_n_timepoints))
+            
+            for i in range(n_cells):
+                # Reshape into bins and average
+                binned = F_plane[i][:new_n_timepoints * bin_size].reshape(new_n_timepoints, bin_size)
+                f_down = np.nanmean(binned, axis=1)
+                F_down[i] = np.round(f_down, 5)
+        
+        else:
+            duration = im_ts[ip][-1]
+            new_n_timepoints = int(duration * target_rate)
+
+            t_orig = im_ts[ip]
+            t_new = np.linspace(t_orig[0], t_orig[-1], new_n_timepoints)
+            
+            F_down = np.zeros((n_cells, new_n_timepoints))
+
+            for i in range(n_cells):
+                f_interp = interp1d(t_orig, F_plane[i], kind='linear')
+                f_interped = f_interp(t_new)
+                F_down[i] = np.round(f_interped, 5)
+        
+        im_ts_downsampled.append(t_new)
+        F_downsampled.append(F_down)
+
+    return F_downsampled, im_ts_downsampled
