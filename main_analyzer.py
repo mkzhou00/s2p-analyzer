@@ -64,6 +64,7 @@ from s2p_utils.processing_utils import (
     get_corrected_F,
     extract_interest_time_intervals,
     extract_imaging_ts_around_events,
+    extract_cues_from_voltages,
     normalize_signal,
     extract_Fave_around_events,
     reorder_clusters,
@@ -190,7 +191,7 @@ def associate_cells_with_intervals(
 def main():
     # Load data
     args = parse_args()
-    args.data_dir = "Z:\\2p\\experiment1\\JB_55\\d1"
+    args.data_dir = "Z:\\2p\\experiment1\\MZ_CA1_WD_JB_55\\d12"
     args.num_planes = 1
     args.num_flyback = 0
     args.imaging_system = "INSS"
@@ -243,7 +244,13 @@ def main():
     # for i in list(range(8)):
     #     axs[i].plot(Fcorr[0][i])
     # fig.savefig(os.path.join(result_dir, "example traces.eps"), format="eps")
+    voltages = data_loader.get_voltages()  # Computer
 
+    event_file = [f for f in os.listdir(file_dir) if f.endswith('.mat')]
+    if not event_file:
+        event_df = extract_cues_from_voltages(voltages)
+        sio.savemat('cues.mat', event_df)       
+            
     # Load behavioral data and timestamps for images and voltages
     event_df = data_loader.get_event_df()  # Arduino
     im_ts, last_imts = data_loader.get_im_ts()  # image time stamps in second
@@ -260,6 +267,8 @@ def main():
     [licks, CS1, CS2, CS3, sucrose, umami] = extract_events(event_df)
     allCS = [CS1, CS2, CS3]
 
+    plot_raw_licks(allCS, licks)
+    
     # Downsample Fcorr to 5hz if not already
     current_framerate = np.round(1 / ((im_ts[0][-1] - im_ts[0][0]) / len(im_ts[0]))).astype(
         int)
@@ -311,8 +320,8 @@ def main():
         Fcorr_around_cue.shape[1], -1, order="F"
     )  
     
-    plt.plot(Fcorr_around_cue[0])
-    plt.plot(Fcorr_around_cue_down[0])
+    plt.plot(im_ts[0], Fcorr[0][0])
+    plt.plot(new_im_ts[0], Fcorr_downsampled[0][10])
     
     # # Normalize inferred spike activities 
     # spks_norm = normalize_signal(spks_cell, args.num_planes, "z_score")

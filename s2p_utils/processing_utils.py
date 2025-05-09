@@ -233,9 +233,6 @@ def extract_events(event_df: pd.DataFrame):
     
     return licks, CS1, CS2, CS3, sucrose, milk
 
-    
-
-
 def get_cell_only_activity(F: list, Fneu: list, spks:list, is_cell: list, num_planes: int):
     """
     Returns cell only activity for traces and spikes based on is_cell, 1==cell, 0==not cell in is_cell, for each plane.
