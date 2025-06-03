@@ -500,12 +500,21 @@ def plot_activity_clusters(
 
     numroisincluster = np.nan * np.ones((len(uniquelabels),))
 
+    # --- Compute global ylim for PSTH ---
+    global_min = np.inf
+    global_max = -np.inf
+
     for c, cluster in enumerate(uniquelabels):
         for k, tempkey in enumerate(trial_types):
             temp = populationdata[
                 np.where(newlabels == cluster)[0],
                 k * window_size : (k + 1) * window_size,
             ]
+            if temp.size > 0:
+                mean_response = np.mean(temp, axis=0)
+                global_min = min(global_min, np.min(mean_response))
+                global_max = max(global_max, np.max(mean_response))
+
             numroisincluster[c] = temp.shape[0]
             sortresponse = np.argsort(
                 np.mean(temp[:, sortwindow[0] : sortwindow[1]], axis=1)
@@ -577,9 +586,11 @@ def plot_activity_clusters(
                 ]
             )
             if cluster == 0:
-                ax.set_ylim([-0.02, 0.02])
+                buffer = 0.01
+                ax.set_ylim([global_min - buffer, global_max + buffer])
             else:
                 ax.set_yticks([])
+         
             ax.legend(
                 bbox_to_anchor=(0.94, 0.22),
                 bbox_transform=fig_activity_cluster.transFigure,

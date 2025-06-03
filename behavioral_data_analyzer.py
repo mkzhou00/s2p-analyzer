@@ -278,8 +278,8 @@ def plot_cumlick(data, cue_types, numdays):
 
                 
                 
-main_data_dir = r"C:\Users\mzhou9\OneDrive - UCSF\2p\MZ_CA1_WD_JB_55"
-num_days = 13
+main_data_dir = r"C:\Users\mzhou9\OneDrive - UCSF\2p\MZ_CA1_WD_JB_53"
+num_days = 12
 cue_types = ["CS1", "CS2", "CS3"]
 result_dir = os.path.join(main_data_dir, "behavioral result")
 if not os.path.exists(result_dir):

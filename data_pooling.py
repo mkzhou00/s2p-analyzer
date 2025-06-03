@@ -74,43 +74,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Suite2p result analyzer.")
     
     parser.add_argument(
-        "--imaging_system",
-        type=str,
-        default="INSS",
-        help="Which scope imaged at: Bruker or INSS"
-    )
-    parser.add_argument(
         "--data_dir",
         type=str,
-        required=False,
-        # default="/Users/mzhou/Library/CloudStorage/OneDrive-UCSF/MZ_hpc_prism_M4/d5/",
-        default="Z:\\2p\\experiment1\\MZ_hpc_prism_M6\\d7\\",
-        help="Directory containing all the required files.",
+        default="Z:\\2p\\experiment1\\",
+        help="data dir for accessing all animals data",
     )
-    parser.add_argument(
-        "--result_folder",
-        type=str,
-        default="result",
-        help="folder for saving figures and results",
-    )
-    parser.add_argument(
-        "--num_planes",
-        type=int,
-        default="4",
-        help="Number of planes recorded during each session",
-    )
-    parser.add_argument(
-        "--num_flyback",
-        type=int,
-        default=0,
-        help="Number of fly back planes at the end of z stack",
-    )
-    parser.add_argument(
-        "--min_cell_prob",
-        type=float,
-        default=0.5,
-        help="Minimum probability to identify an ROI as a cell.",
-    )
+
     parser.add_argument(
         "--pre_cue_window",
         type=float,
@@ -133,23 +102,21 @@ def parse_args():
         "--framerate", type=int, default=5, help="Average frame rate, 5hz"
     )
     parser.add_argument(
+        "--target_frames", type=int, default=300, help="Should be the total time window * framerate * nCS, so 300 for the current settings"
+    )
+    parser.add_argument(
         "--trial_types",
         type=list,
         default=["CS1+", "CS2+", "CS3-"],
         help="Trial types of the experiment",
     )
     parser.add_argument(
-        "--neucoeff",
-        type=float,
-        default=0.7,
-        help="neuropil coefficient factor",
+        "--learning_stage",
+        type=str,
+        default="late",
+        help="early, late or multiple reward stages of learning to access certain folder",
     )
-    parser.add_argument(
-        "--cell_threshold",
-        type=int,
-        default=10,
-        help="threshold percentage difference between F and Fneu to count as a valid cell",
-    )
+    
     return parser.parse_args()
 
 
@@ -172,333 +139,216 @@ def associate_cells_with_intervals(
 
 
 def main():
-    # Load data
+    # Load arguments
     args = parse_args()
-    args.data_dir = "Z:\\2p\\experiment1\\MZ_CA1_WD_M7\\d5"
-    args.num_planes = 1
-    args.num_flyback = 0
-    args.imaging_system = "INSS"
-    # args.imaging_system = "Bruker"
-    data_loader = DataLoader(args.data_dir, args.num_planes, args.num_flyback, args.imaging_system)
+    args.learning_stage = "early"
     
-
-    # Make a result folder if if didn't exist
-    result_dir = os.path.join(args.data_dir, args.result_folder)
-    if not os.path.exists(result_dir):
-        os.makedirs(result_dir)
-    file_dir = os.path.join(args.data_dir, "files")
-    # Check if files folder exist
-    assert os.path.exists(file_dir), "Error: no files folder"
+    # Set animals and days for early and late learning
+    if args.learning_stage == "early":
+        result_dir = "Z:\\2p\\experiment1\\population_data\\early learning\\"
+        animal_list = [
+            "MZ_CA1_WD_F3\\d1",
+            "MZ_CA1_WD_M4\\d1",
+            "MZ_CA1_WD_M5\\d1",
+            "MZ_CA1_WD_M6\\d2",
+            "MZ_CA1_WD_M7\\d1",
+            "MZ_CA1_WD_M8\\d1",
+            "MZ_CA1_WD_JB_54\\d3",
+            "MZ_CA1_WD_JB_55\\d3"
+        ]
+    elif args.learning_stage == "late":
+        result_dir = "Z:\\2p\\experiment1\\population_data\\late learning\\"
+        animal_list = [
+            "MZ_CA1_WD_F3\\d7",
+            "MZ_CA1_WD_M4\\d5",
+            "MZ_CA1_WD_M5\\d6",
+            "MZ_CA1_WD_M6\\d6",
+            "MZ_CA1_WD_M7\\d5",
+            "MZ_CA1_WD_M8\\d6",
+            "MZ_CA1_WD_JB_54\\d8",
+            "MZ_CA1_WD_JB_55\\d12"
+        ]   
     
-    if os.path.exists(os.path.join(file_dir, "F.npy")):
-        Fcorr = np.load(os.path.join(file_dir, "F.npy"), allow_pickle=True)
+    # For plotting
+    window_size = 100
+    frames_to_reward = args.delay_to_reward * args.framerate
+    pre_window_size = args.pre_cue_window * args.framerate
+          
+    # Load and concatenate population data across animals
+    if os.path.exists(os.path.join(result_dir, "populationdata.npy")):
+        populationdata =  np.load(os.path.join(result_dir, "populationdata.npy"), allow_pickle=True)
     else:
-        # Load all necessary variables.
-        F = data_loader.get_F()
-        Fneu = data_loader.get_Fneu()
-        stat = data_loader.get_stat()
-        is_cell = data_loader.get_is_cell()
-        # ops = data_loader.get_ops()
-        spks = data_loader.get_spks()
-
-        ## Preprocessing steps:
-        # Remove overlapping cells across planes
-        if args.num_planes > 1:
-            overlapping_cells = correct_overlapping_cells_across_planes(stat, is_cell, args.num_planes)
-
-        # Get F_cell and Fneu_cell only activity
-        F_cell, Fneu_cell, spks_cell = get_cell_only_activity(F, Fneu, spks, is_cell, args.num_planes)
-
-        # Get neuropil corrected F with neuropil coefficient
-        assert len(F_cell) == len(
-            Fneu_cell
-        ), "Fcell and Fneu cell must be the same length"
-        Fcorr = get_corrected_F(F_cell, Fneu_cell, args.num_planes, args.neucoeff)
-        for ip in range(args.num_planes):
-            assert len(F_cell[ip]) == len(Fcorr[ip])
-
-        F_to_save = os.path.join(args.data_dir, "files", "F.npy")
-        np.save(F_to_save, Fcorr)
-        S_to_save = os.path.join(args.data_dir, "files", "spks.npy")
-        np.save(S_to_save, spks_cell)
-
-    # # Plot multiple traces
-    # fig, axs = plt.subplots(8,1)
-    # for i in list(range(8)):
-    #     axs[i].plot(Fcorr[0][i])
-    # fig.savefig(os.path.join(result_dir, "example traces.eps"), format="eps")
-
-    # Load behavioral data and timestamps for images and voltages
-    event_df = data_loader.get_event_df()  # Arduino
-    im_ts, last_imts = data_loader.get_im_ts()  # image time stamps in second
+        populationdata_list = []
+        for animal in animal_list:
+            file_dir = os.path.join(args.data_dir, animal, "files", "F_around_cue.npy")
+            tempdata = np.load(file_dir, allow_pickle=True)
+            ncells, nframes = tempdata.shape
+            if nframes < args.target_frames:
+                pad_width = args.target_frames - nframes
+                tempdata = np.pad(tempdata, ((0, 0), (0, pad_width)), mode='constant', constant_values=0)
+            elif nframes > args.target_frames:
+                tempdata = tempdata[:, :args.target_frames]
+            populationdata_list.append(tempdata)
+       
+        populationdata  = np.vstack(populationdata_list)
+        np.save(os.path.join(result_dir, "populationdata.npy"), populationdata)    
     
-    # # Correct `event_df` and imaging timestamps based on voltage recordings for Bruker
-    if args.imaging_system == "Bruker":
-        voltages = data_loader.get_voltages()  # Computer
-        event_df, im_ts = correct_timestamps(event_df, im_ts, args.num_planes, args.imaging_system, voltages)
-    elif args.imaging_system == "INSS":
-        # Correct event_df based on imaging timestamps for INSS
-        event_df = correct_timestamps(event_df, last_imts, args.num_planes, args.imaging_system)
-
-    # Extract all event time points from new event_df
-    [licks, CS1, CS2, CS3, sucrose, umami] = extract_events(event_df)
-    allCS = [CS1, CS2, CS3]
+ 
+    # Define cache file paths before running PCA
+    pca_path = os.path.join(result_dir, "pca_model.pickle")
+    clustering_path = os.path.join(result_dir, "clustering_model.pickle")
+    labels_path = os.path.join(result_dir, "clusterlabels.npy")
+    transformed_path = os.path.join(result_dir, "transformed_data.npy")
     
-    
-    # Extract time around each cue and sorted by CS type, shape is numCS --> len trials
-    interest_intervals = extract_interest_time_intervals(
-        allCS, args.pre_cue_window, args.post_cue_window
-    )
-    # Extract image time points around each cue and sorted by CS type and plane, shape is plane --> numCS --> len trials
-    im_idx_around_cue = extract_imaging_ts_around_events(
-        allCS, new_im_ts, args.num_planes, interest_intervals
-    )
+    # Load saved data and models if exist
+    if all(os.path.exists(p) for p in [pca_path, clustering_path, labels_path, transformed_path]):
+        with open(pca_path, "rb") as f:
+            pca_data = pickle.load(f)
+            pca = pca_data["pca"]
+            num_retained_pcs = pca_data["num_retained_pcs"]
 
+        with open(clustering_path, "rb") as f:
+            cluster_data = pickle.load(f)
+            model = cluster_data["model"]
+            n_clusters = cluster_data["n_clusters"]
+            n_nearest_neighbors = cluster_data["n_neighbors"]
 
-    # Extract time around each cue and sorted by CS type, shape is numCS --> len trials
-    interest_intervals = extract_interest_time_intervals(
-        allCS, args.pre_cue_window, args.post_cue_window
-    )
-    # Extract image time points around each cue and sorted by CS type and plane, shape is plane --> numCS --> len trials
-    im_idx_around_cue = extract_imaging_ts_around_events(
-        allCS, new_im_ts, args.num_planes, interest_intervals
-    )
-
-    # Normalize signal
-    Fcorr_norm = normalize_signal(
-        Fcorr, args.num_planes, "median"
-    )  # can be z_score, median, robust_z_score
-
-    # # Extract average Fcorr around each cue in all cuetypes for each cell, shape is nCS x nCell x nFrames
-    Fcorr_around_cue = extract_Fave_around_events(
-        allCS,
-        Fcorr_norm,
-        im_ts,
-        args.num_planes,
-        args.pre_cue_window,
-        args.post_cue_window,
-    )
-    # reshaping the data, output is nCell x nCS*nFrames
-    Fcorr_around_cue = Fcorr_around_cue.transpose(1, 2, 0).reshape(
-        Fcorr_around_cue.shape[1], -1, order="F"
-    )  
-    
-    # # Normalize inferred spike activities 
-    # spks_norm = normalize_signal(spks_cell, args.num_planes, "z_score")
-    # Spks_around_cue = extract_Fave_around_events(
-    #     allCS,
-    #     spks_norm,
-    #     im_ts,
-    #     args.num_planes,
-    #     args.pre_cue_window,
-    #     args.post_cue_window,
-    # )
-    # # reshaping the data, output is nCell x nCS*nFrames
-    # Spks_around_cue = Spks_around_cue.transpose(1, 2, 0).reshape(
-    #     Spks_around_cue.shape[1], -1, order="F"
-    # )  
-    # ## Plot behavior rasters
-    # fig_rawplot = plot_raw_licks(allCS, licks, args.pre_cue_window, 10)
-    # plt.close(fig_rawplot)
-    # fig_rawplot.savefig(
-    #     os.path.join(result_dir, "behavior_raster.png"), format="png"
-    # )
-
-    # Initialize parameters for plotting
-    window_size = int(
-        Fcorr_around_cue.shape[1] / len(args.trial_types)
-    )  # total frame for one cue, inherited in the Fcorr_around_the_cue
-    # if args.num_planes == 1:
-    #     framerate = np.round(1 / ((im_ts[-1] - im_ts[0]) / len(im_ts))).astype(int)
-    # else:
-    framerate = np.round(1 / ((im_ts[0][-1] - im_ts[0][0]) / len(im_ts[0]))).astype(
-            int)
-    frames_to_reward = args.delay_to_reward * framerate
-    pre_window_size = args.pre_cue_window * framerate
-    sortwindow = [
-        pre_window_size,
-        pre_window_size + frames_to_reward,
-    ]
-
-    # # Plot PSTH
-    fig_calcium_PSTH = plot_average_PSTH_around_interest_window(
-        args.trial_types,
-        Fcorr_around_cue,
-        window_size,
-        pre_window_size,
-        frames_to_reward,
-        sortwindow,
-        framerate,
-    )
-    fig_calcium_PSTH.savefig(os.path.join(result_dir, "PSTH.png"), format="png")
-    plt.close(fig_calcium_PSTH)
-
-    # Get the example cells based on sorted response, plot PSTH
-    example_cells = []
-    for cue_type in range(len(args.trial_types)):
-        idx_sortresponse = np.argsort(
-            np.mean(Fcorr_around_cue[:, cue_type*window_size+sortwindow[0]: cue_type*window_size+sortwindow[1]], axis=1)
-        )[::-1]
-        example_cells.extend(list(
-            idx_sortresponse[: int(np.floor(0.01 * len(idx_sortresponse)))]
-        ))
+        transformed_data = np.load(transformed_path)
+        newlabels = np.load(labels_path)
+        uniquelabels = list(set(newlabels))
         
-    # # Plot individual cell activities
-    # plot_after_cue = 10  # only plot up to 6s after the cue
-    plot_individual_trial_average_activity(
-        Fcorr_around_cue,
-        args.trial_types,
-        window_size,
-        pre_window_size,
-        frames_to_reward,
-        example_cells,
-        framerate,
-        result_dir,
-    )
+    else:
+        ## STEP 1: PCA
+        pca = PCA(n_components=min(populationdata.shape[0], populationdata.shape[1]), whiten=True)
+        pca.fit(populationdata)
+        pca_vectors = pca.components_
+        x = 100 * pca.explained_variance_ratio_
+        xprime = x - (x[0] + (x[-1] - x[0]) / (x.size - 1) * np.arange(x.size))
+        num_retained_pcs = np.argmin(xprime)
+
+        # # dimension-reduced data on the first principal components
+        transformed_data = pca.transform(populationdata)
+        np.save(os.path.join(result_dir, "transformed_data.npy"), transformed_data)
+        
+        with open(pca_path, "wb") as f:
+            pickle.dump({
+                "pca": pca,
+                "num_retained_pcs": num_retained_pcs
+            }, f)       
+        
+        # # Plot PC screen plot
+        # fig_pc_screenplot = plot_PC_screenplot(pca, x, num_retained_pcs)
+        # fig_pc_screenplot.savefig(
+        #     os.path.join(result_dir, "PC_screenplot.png"), format="png"
+        # )
+
+        # # Plot PCs
+        # fig_pcs = plot_PCs(
+        #     pca_vectors,
+        #     num_retained_pcs,
+        #     args.trial_types,
+        #     window_size,
+        #     pre_window_size,
+        #     frames_to_reward,
+        #     args.framerate,
+        # )
+        # fig_pcs.savefig(os.path.join(result_dir, "PCs.png"), format="png")
+        # plt.close(fig_pcs)
+
+        ## STEP 2: Clustering
+        max_n_clusters = 9  # initialize nclusters, can run more but takes longer, 9 is relatively optimal
+        possible_n_clusters = np.arange(2, max_n_clusters + 1)  # has to be at least two
+        possible_n_nearest_neighbors = np.array(
+            [10, 50, 100]
+        )  # depends on the size of the data
+        silhouette_scores = np.nan * np.ones(
+            (possible_n_clusters.size, possible_n_nearest_neighbors.size)
+        )
+
+        # Fit clusters with Spectral Clustering
+        for n_clustersidx, n_clusters in enumerate(possible_n_clusters):
+            for nnidx, nn in enumerate(possible_n_nearest_neighbors):
+                model = SpectralClustering(
+                    n_clusters=n_clusters, affinity="nearest_neighbors", n_neighbors=nn
+                )  # separate clusters based on n-nearest neighbors
+                model.fit(transformed_data[:, :num_retained_pcs])
+                silhouette_scores[n_clustersidx, nnidx] = silhouette_score(
+                    transformed_data[:, :num_retained_pcs], model.labels_, metric="cosine"
+                )  # silhouette coeff = (mean near-cluster distance - mean intra-cluster distance) / max of the two, 1 is the best, -1 is the worst
+                print(
+                    "Done with numclusters = %d, num nearest neighbors = %d: score = %.3f"
+                    % (n_clusters, nn, silhouette_scores[n_clustersidx, nnidx])
+                )
+        print("Done with model fitting")
+
+        temp = {}
+        temp["possible_n_clusters"] = possible_n_clusters
+        temp["possible_n_nearest_neighbors"] = possible_n_nearest_neighbors
+        temp["silhouette_scores"] = silhouette_scores
+        temp["shape"] = "cluster_nn"
+        with open(os.path.join(result_dir, "silhouette_scores.pickle"), "wb") as f:
+            pickle.dump(temp, f)
+
+        with open(os.path.join(result_dir, "silhouette_scores.pickle"), "rb") as f:
+            silhouette_scores = pickle.load(f)
+        # Identify optimal parameters from the above parameter space
+        temp = np.where(
+            silhouette_scores["silhouette_scores"]
+            == np.nanmax(silhouette_scores["silhouette_scores"])
+        )
+        n_clusters = silhouette_scores["possible_n_clusters"][temp[0][0]]
+        n_nearest_neighbors = silhouette_scores["possible_n_nearest_neighbors"][temp[1][0]]
+        print(
+            "Optimal number of clusters:",
+            n_clusters,
+            "; Optimal neighbors:",
+            n_nearest_neighbors,
+        )
+
+        ## STEP 3: Redo clustering with these optimal parameters
+        model = SpectralClustering(
+            n_clusters=n_clusters,
+            affinity="nearest_neighbors",
+            n_neighbors=n_nearest_neighbors,
+        )
+        # model = KMeans(n_clusters=n_clusters)
+        # model = AgglomerativeClustering(n_clusters=9,
+        #                                 affinity='l1',
+        #                                 linkage='average')
+        model.fit(transformed_data[:, :num_retained_pcs])
+
+        temp = silhouette_score(
+            transformed_data[:, :num_retained_pcs], model.labels_, metric="cosine"
+        )
+        print(
+            "Number of clusters = %d, average silhouette = %.3f"
+            % (len(set(model.labels_)), temp)
+        )
+
+        # # Save this optimal clustering model.
+        with open(clustering_path, "wb") as f:
+            pickle.dump({
+                "model": model,
+                "n_clusters": n_clusters,
+                "n_neighbors": n_nearest_neighbors
+            }, f)
+
+        # Rename the clusters so that the first cluster will have the most
+        # positive response and the last cluster will have the most negative response.
+        newlabels = reorder_clusters(populationdata, pre_window_size, model.labels_)
+        # Create a new variable containing all unique cluster labels
+        uniquelabels = list(set(newlabels))
+        np.save(os.path.join(result_dir, "clusterlabels.npy"), newlabels)
+
     
-    # plot_individual_cells_activity(
-    #     Fcorr_norm, allCS, im_idx_around_cue, example_cells, args.num_planes, plot_till_idx)
-    # F_example_cells = Fcorr_around_cue[example_cells, :]
-    # fig_calcium_PSTH_example_cells = plot_average_PSTH_around_interest_window(
-    #     args.trial_types,
-    #     F_example_cells,
-    #     window_size,
-    #     pre_window_size,
-    #     frames_to_reward,
-    #     sortwindow,
-    #     framerate,
-    # )
-    # fig_calcium_PSTH_example_cells.savefig(
-    #     os.path.join(result_dir, "PSTH_example_cells.png"), format="png"
-    # )
-    # plt.close(fig_calcium_PSTH_example_cells)
-
-
-    ## PCA
-    populationdata = Fcorr_around_cue
-    pca = PCA(n_components=min(populationdata.shape[0], populationdata.shape[1]), whiten=True)
-    pca.fit(populationdata)
-    pca_vectors = pca.components_
-    print("Number of PCs = %d" % (pca_vectors.shape[0]))
-    x = 100 * pca.explained_variance_ratio_
-    xprime = x - (x[0] + (x[-1] - x[0]) / (x.size - 1) * np.arange(x.size))
-    num_retained_pcs = np.argmin(xprime)
-    print("Number of PCs to keep = %d" % (num_retained_pcs))
-
-    # # dimension-reduced data on the first principal components
-    transformed_data = pca.transform(populationdata)
-    np.save(os.path.join(file_dir, "transformed_data.npy"), transformed_data)
-
-    # Plot PC screen plot
-    fig_pc_screenplot = plot_PC_screenplot(pca, x, num_retained_pcs)
-    fig_pc_screenplot.savefig(
-        os.path.join(result_dir, "PC_screenplot.png"), format="png"
-    )
-
-    # Plot PCs
-    fig_pcs = plot_PCs(
-        pca_vectors,
-        num_retained_pcs,
-        args.trial_types,
-        window_size,
-        pre_window_size,
-        frames_to_reward,
-        framerate,
-    )
-    fig_pcs.savefig(os.path.join(result_dir, "PCs.png"), format="png")
-    plt.close(fig_pcs)
-
-    ## Clustering
-    max_n_clusters = 9  # can run more but takes longer, 9 is relatively optimal
-    possible_n_clusters = np.arange(2, max_n_clusters + 1)  # has to be at least two
-    possible_n_nearest_neighbors = np.array(
-        [10, 50, 100]
-    )  # depends on the size of the data
-    silhouette_scores = np.nan * np.ones(
-        (possible_n_clusters.size, possible_n_nearest_neighbors.size)
-    )
-
-    # Fit clusters with Spectral Clustering
-    for n_clustersidx, n_clusters in enumerate(possible_n_clusters):
-        for nnidx, nn in enumerate(possible_n_nearest_neighbors):
-            model = SpectralClustering(
-                n_clusters=n_clusters, affinity="nearest_neighbors", n_neighbors=nn
-            )  # separate clusters based on n-nearest neighbors
-            model.fit(transformed_data[:, :num_retained_pcs])
-            silhouette_scores[n_clustersidx, nnidx] = silhouette_score(
-                transformed_data[:, :num_retained_pcs], model.labels_, metric="cosine"
-            )  # silhouette coeff = (mean near-cluster distance - mean intra-cluster distance) / max of the two, 1 is the best, -1 is the worst
-            print(
-                "Done with numclusters = %d, num nearest neighbors = %d: score = %.3f"
-                % (n_clusters, nn, silhouette_scores[n_clustersidx, nnidx])
-            )
-    print("Done with model fitting")
-
-    temp = {}
-    temp["possible_n_clusters"] = possible_n_clusters
-    temp["possible_n_nearest_neighbors"] = possible_n_nearest_neighbors
-    temp["silhouette_scores"] = silhouette_scores
-    temp["shape"] = "cluster_nn"
-    with open(os.path.join(file_dir, "silhouette_scores.pickle"), "wb") as f:
-        pickle.dump(temp, f)
-
-    with open(os.path.join(file_dir, "silhouette_scores.pickle"), "rb") as f:
-        silhouette_scores = pickle.load(f)
-    # Identify optimal parameters from the above parameter space
-    temp = np.where(
-        silhouette_scores["silhouette_scores"]
-        == np.nanmax(silhouette_scores["silhouette_scores"])
-    )
-    n_clusters = silhouette_scores["possible_n_clusters"][temp[0][0]]
-    n_nearest_neighbors = silhouette_scores["possible_n_nearest_neighbors"][temp[1][0]]
-    print(
-        "Optimal number of clusters:",
-        n_clusters,
-        "; Optimal neighbors:",
-        n_nearest_neighbors,
-    )
-
-    transformed_data = np.load(os.path.join(file_dir, "transformed_data.npy"))
-    # # Redo clustering with these optimal parameters
-    model = SpectralClustering(
-        n_clusters=n_clusters,
-        affinity="nearest_neighbors",
-        n_neighbors=n_nearest_neighbors,
-    )
-    # model = KMeans(n_clusters=n_clusters)
-    # model = AgglomerativeClustering(n_clusters=9,
-    #                                 affinity='l1',
-    #                                 linkage='average')
-    model.fit(transformed_data[:, :num_retained_pcs])
-
-    temp = silhouette_score(
-        transformed_data[:, :num_retained_pcs], model.labels_, metric="cosine"
-    )
-    print(
-        "Number of clusters = %d, average silhouette = %.3f"
-        % (len(set(model.labels_)), temp)
-    )
-
-    # # Save this optimal clustering model.
-    # with open(os.path.join(file_dir, 'clusteringmodel.pickle'), 'wb') as f:
-    #     pickle.dump(model, f)
-
-    # Rename the clusters so that the first cluster will have the most
-    # positive response and the last cluster will have the most negative response.
-    newlabels = reorder_clusters(populationdata, pre_window_size, model.labels_)
-
-    # Create a new variable containing all unique cluster labels
-    uniquelabels = list(set(newlabels))
-    np.save(os.path.join(file_dir, "clusterlabels.npy"), newlabels)
-
-    # uniquelabels = np.load(os.path.join(file_dir, "clusterlabels.npy"))
     # Plot silhouette coefficient scores for each cluster
-    fig_silouette = make_silhouette_plot(
-        transformed_data[:, :num_retained_pcs], model.labels_
-    )
-    fig_silouette.savefig(os.path.join(result_dir, "silouette.png"), format="png")
-    plt.close(fig_silouette)
+    # fig_silouette = make_silhouette_plot(
+    #     transformed_data[:, :num_retained_pcs], model.labels_
+    # )
+    # fig_silouette.savefig(os.path.join(result_dir, "silouette.png"), format="png")
+    # plt.close(fig_silouette)
 
+    
     # Plot activity clusters under each CS
     fig_activity_cluster = plot_activity_clusters(
         populationdata,
@@ -509,7 +359,7 @@ def main():
         window_size,
         pre_window_size,
         frames_to_reward,
-        framerate,
+        args.framerate,
     )
     fig_activity_cluster.savefig(
         os.path.join(result_dir, "activity_clusters.png"), format="png"

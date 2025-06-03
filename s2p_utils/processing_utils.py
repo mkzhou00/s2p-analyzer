@@ -511,7 +511,7 @@ def downsample_data(F, im_ts, current_rate, target_rate):
     
     for ip, F_plane in enumerate(F):
         n_cells, n_timepoints = np.array(F_plane).shape
-        
+
         # If the current rate can be evenly divided by the target framerate, then average frames and use the first timestamp
         if np.remainder(current_rate, target_rate) == 0:
             bin_size = int(np.divide(current_rate, target_rate))
