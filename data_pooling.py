@@ -39,6 +39,9 @@ import matplotlib.cm as cm
 import matplotlib.colors as colors
 import matplotlib.colorbar as colorbar
 import sys
+from sklearn.model_selection import train_test_split, cross_val_score, cross_val_predict, LeaveOneOut
+from sklearn.metrics import confusion_matrix, accuracy_score
+from sklearn.svm import SVC, LinearSVC
 
 from s2p_utils.data_loader import DataLoader
 from s2p_utils.processing_utils import (
@@ -141,7 +144,7 @@ def associate_cells_with_intervals(
 def main():
     # Load arguments
     args = parse_args()
-    args.learning_stage = "early"
+    args.learning_stage = "late"
     
     # Set animals and days for early and late learning
     if args.learning_stage == "early":
@@ -177,8 +180,10 @@ def main():
     # Load and concatenate population data across animals
     if os.path.exists(os.path.join(result_dir, "populationdata.npy")):
         populationdata =  np.load(os.path.join(result_dir, "populationdata.npy"), allow_pickle=True)
+        animal_id = np.load(os.path.join(result_dir, "animal_id.npy"), allow_pickle=True)
     else:
         populationdata_list = []
+        animal_id = []
         for animal in animal_list:
             file_dir = os.path.join(args.data_dir, animal, "files", "F_around_cue.npy")
             tempdata = np.load(file_dir, allow_pickle=True)
@@ -188,12 +193,22 @@ def main():
                 tempdata = np.pad(tempdata, ((0, 0), (0, pad_width)), mode='constant', constant_values=0)
             elif nframes > args.target_frames:
                 tempdata = tempdata[:, :args.target_frames]
+            
+            # Perform baseline subtraction of the 3s pre CS period
+            baseline_window = 15 # 3s for 5hz
+            for i in range(len(args.trial_types)):
+                start = i * window_size
+                end = start + window_size
+                baseline = np.mean(tempdata[:,  start:start + baseline_window], axis=1, keepdims=True)
+                tempdata[:, start:end] -= baseline
             populationdata_list.append(tempdata)
-       
+            animal_id.extend([animal] * ncells) # track neuron to specific animal
+            
         populationdata  = np.vstack(populationdata_list)
+        animal_id = np.array(animal_id)
         np.save(os.path.join(result_dir, "populationdata.npy"), populationdata)    
-    
- 
+        np.save(os.path.join(result_dir, "animal_id.npy"), animal_id)
+
     # Define cache file paths before running PCA
     pca_path = os.path.join(result_dir, "pca_model.pickle")
     clustering_path = os.path.join(result_dir, "clustering_model.pickle")
@@ -236,24 +251,24 @@ def main():
                 "num_retained_pcs": num_retained_pcs
             }, f)       
         
-        # # Plot PC screen plot
-        # fig_pc_screenplot = plot_PC_screenplot(pca, x, num_retained_pcs)
-        # fig_pc_screenplot.savefig(
-        #     os.path.join(result_dir, "PC_screenplot.png"), format="png"
-        # )
+        # Plot PC screen plot
+        fig_pc_screenplot = plot_PC_screenplot(pca, x, num_retained_pcs)
+        fig_pc_screenplot.savefig(
+            os.path.join(result_dir, "PC_screenplot.png"), format="png"
+        )
 
-        # # Plot PCs
-        # fig_pcs = plot_PCs(
-        #     pca_vectors,
-        #     num_retained_pcs,
-        #     args.trial_types,
-        #     window_size,
-        #     pre_window_size,
-        #     frames_to_reward,
-        #     args.framerate,
-        # )
-        # fig_pcs.savefig(os.path.join(result_dir, "PCs.png"), format="png")
-        # plt.close(fig_pcs)
+        # Plot PCs
+        fig_pcs = plot_PCs(
+            pca_vectors,
+            num_retained_pcs,
+            args.trial_types,
+            window_size,
+            pre_window_size,
+            frames_to_reward,
+            args.framerate,
+        )
+        fig_pcs.savefig(os.path.join(result_dir, "PCs.png"), format="png")
+        plt.close(fig_pcs)
 
         ## STEP 2: Clustering
         max_n_clusters = 9  # initialize nclusters, can run more but takes longer, 9 is relatively optimal
@@ -340,13 +355,35 @@ def main():
         uniquelabels = list(set(newlabels))
         np.save(os.path.join(result_dir, "clusterlabels.npy"), newlabels)
 
+    df_contrib_by_animal = pd.DataFrame(
+        {'Animal': animal_id,
+         'Cluster': newlabels}
+    )
+    cluster_counts = df_contrib_by_animal.groupby(['Cluster', 'Animal']).size().unstack(fill_value=0)
+    cluster_percent = cluster_counts.divide(cluster_counts.sum(axis=1), axis=0)
+    print("\nNeuron counts per cluster per animal:")
+    print(cluster_counts)
+    # Save as CSV
+    cluster_counts.to_csv(os.path.join(result_dir, "cluster_counts.csv"))
+    cluster_percent.to_csv(os.path.join(result_dir, "cluster_percent.csv"))
+
+    # Plot heatmap
+    plt.figure(figsize=(10, 6))
+    sns.heatmap(cluster_percent, annot=True, cmap="viridis", fmt=".2f")
+    plt.title("Proportion of neurons from each animal in each cluster")
+    plt.ylabel("Cluster")
+    plt.xlabel("Animal")
+    plt.tight_layout()
+    plt.savefig(os.path.join(result_dir, "cluster_contribution_heatmap.png"))
+    plt.show()
+    
     
     # Plot silhouette coefficient scores for each cluster
-    # fig_silouette = make_silhouette_plot(
-    #     transformed_data[:, :num_retained_pcs], model.labels_
-    # )
-    # fig_silouette.savefig(os.path.join(result_dir, "silouette.png"), format="png")
-    # plt.close(fig_silouette)
+    fig_silouette = make_silhouette_plot(
+        transformed_data[:, :num_retained_pcs], model.labels_
+    )
+    fig_silouette.savefig(os.path.join(result_dir, "silouette.png"), format="png")
+    plt.close(fig_silouette)
 
     
     # Plot activity clusters under each CS
@@ -372,6 +409,25 @@ def main():
     )
     fig_cluster_pairs.savefig(os.path.join(result_dir, "clusters.png"), format="png")
     plt.close(fig_cluster_pairs)
+
+
+    # Decoding analysis
+    # trial_labels = np.repeat(args.trial_types, 100)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 if __name__ == "__main__":
     main()

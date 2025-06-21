@@ -191,7 +191,7 @@ def associate_cells_with_intervals(
 def main():
     # Load data and initialize parameters
     args = parse_args()
-    args.data_dir = "Z:\\2p\\experiment1\\MZ_CA1_WD_JB_55\d12"
+    args.data_dir = "Z:\\2p\\experiment1\\MZ_CA1_WD_JB_54\d5"
     args.num_planes = 1
     args.num_flyback = 0
     
