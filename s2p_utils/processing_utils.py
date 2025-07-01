@@ -443,6 +443,9 @@ def extract_F_around_events(
         F: Fcorrected trace for all planes all cells
         im_ts: image timestamps used to calculate image indexes
         num_planes: number of planes
+        pre_cue_window = seconds before cue onset
+        post_cue_window = seconds after cue onset
+        binsize =  to average frames 
 
     Returns:
     Fcorrected_around_cue with the structure of len(CS), number of cells, timepoints
@@ -480,7 +483,15 @@ def extract_F_around_events(
                     ]  # F for cell in the plane, of this trial in this cue type (framenumber x )
                     F_temp1 = []
                     for ibin in range(windowsize//binsize):
-                        F_temp1.append(np.mean(F_temp[ibin*binframes:(ibin+1)*binframes])) # bin frames to get the mean value
+                        start = ibin * binframes
+                        end = (ibin + 1) * binframes
+                        frame_slice = F_temp[start:end]
+                        # Check if the slice is nonempty
+                        if frame_slice.size == 0 or np.all(np.isnan(frame_slice)):
+                            F_temp1.append(0.0)  # or np.nan, or skip
+                        else:
+                            F_temp1.append(np.nanmean(frame_slice))
+        
                     F_trial[cue_type][trial].append(F_temp1)
                 # F_ave_around_cues[cue_type].append(cellave)
     F_trial = np.array(F_trial)

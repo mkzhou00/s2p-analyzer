@@ -191,13 +191,13 @@ def associate_cells_with_intervals(
 def main():
     # Load data and initialize parameters
     args = parse_args()
-    args.data_dir = "Z:\\2p\\experiment1\\MZ_CA1_WD_JB_54\d5"
-    args.num_planes = 1
+    args.data_dir = "Z:\\2p\\experiment1\\MZ_CA1_WD_F3\d7"
+    args.num_planes = 4
     args.num_flyback = 0
     
     # Select the imaging system
-    args.imaging_system = "INSS"
-    # args.imaging_system = "Bruker"
+    # args.imaging_system = "INSS"
+    args.imaging_system = "Bruker"
 
     data_loader = DataLoader(args.data_dir, args.num_planes, args.num_flyback, args.imaging_system)
     
