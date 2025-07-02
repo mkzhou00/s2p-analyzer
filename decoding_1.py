@@ -355,41 +355,53 @@ def check_patterns_for_nan(patterns):
 def main():
     # Load data and initialize parameters
     args = parse_args()
-    args.learning_stage = "late"
+    args.learning_stage = "early"
 
     # Set animals and days for early and late learning
     if args.learning_stage == "early":
         result_dir = "Z:\\2p\\experiment1\\population_data\\early learning\\"
         animal_list = [
-            "MZ_CA1_WD_F3\\d1",
-            "MZ_CA1_WD_M4\\d1",
-            "MZ_CA1_WD_M5\\d1",
-            "MZ_CA1_WD_M6\\d2",
-            "MZ_CA1_WD_M7\\d1",
-            "MZ_CA1_WD_M8\\d1",
-            "MZ_CA1_WD_JB_54\\d3",
-            "MZ_CA1_WD_JB_55\\d3"
+            "MZ_CA1_WD_F3",
+            "MZ_CA1_WD_M4",
+            "MZ_CA1_WD_M5",
+            "MZ_CA1_WD_M6",
+            "MZ_CA1_WD_M7",
+            "MZ_CA1_WD_M8",
+            "MZ_CA1_WD_JB_54",
+            "MZ_CA1_WD_JB_55",
         ]
+        daylist = [1, 1, 1, 2, 1, 1, 3, 3]
     elif args.learning_stage == "late":
         result_dir = "Z:\\2p\\experiment1\\population_data\\late learning\\"
         animal_list = [
-            "MZ_CA1_WD_F3\\d7",
-            "MZ_CA1_WD_M4\\d5",
-            "MZ_CA1_WD_M5\\d6",
-            "MZ_CA1_WD_M6\\d6",
-            "MZ_CA1_WD_M7\\d5",
-            "MZ_CA1_WD_M8\\d6",
-            "MZ_CA1_WD_JB_54\\d8",
-            "MZ_CA1_WD_JB_55\\d12"
+            "MZ_CA1_WD_F3",
+            "MZ_CA1_WD_M4",
+            "MZ_CA1_WD_M5",
+            "MZ_CA1_WD_M6",
+            "MZ_CA1_WD_M7",
+            "MZ_CA1_WD_M8",
+            "MZ_CA1_WD_JB_54",
+            "MZ_CA1_WD_JB_55"
         ]   
+        daylist = [7, 5, 6, 6, 5, 6, 8, 12]
 
     # animal_ids = []
+    
+    seed = 42
+    n_trial_per_cue = 25
     cue_bins = 3
     trace_bins = [4, 6] # 4 and 5s
     baseline_bine = [0, 2]
     total_bins = slice(0, 20)
-    pattern_path = os.path.join(result_dir, "decodingpatterns.pickle")
-    label_path = os.path.join(result_dir, "decodinglabels.pickle")
+
+    pattern_path = os.path.join(result_dir, "decoding_patterns.pickle")
+    label_path = os.path.join(result_dir, "decoding_labels.pickle")
+    
+    subsampling = np.nan
+    if np.isnan(subsampling):
+        niteration = 1
+    else:
+        niteration = 100
     
     if os.path.exists(pattern_path):
         with open(pattern_path, "rb") as f:
@@ -400,8 +412,9 @@ def main():
     else:
         patterns = {}
         labels = {}
-        for animal in animal_list:
-            animal_dir = os.path.join(args.data_dir, animal)
+        for ia, animal in enumerate(animal_list):
+            day = daylist[ia]
+            animal_dir = os.path.join(args.data_dir, animal, "d"+str(day))
             file_dir = os.path.join(animal_dir, "files")
             
             Fcorr_5hz = np.load(os.path.join(file_dir, "F_5hz.npy"), allow_pickle=True)
@@ -443,55 +456,96 @@ def main():
             pickle.dump(labels, f)
     
 
-    check_patterns_for_nan(patterns)
+    time_indices = np.arange(0, 10)  
+    accuracy = [[] for x in animal_list]
+    accuracy_chance = [[] for x in animal_list]
     
-    # tot_scores,tot_scores_chance = decode_within(patterns, labels)
-
-    # cue_patterns = {}
-    # for animal, data in patterns.items():
-    #     # data.shape: (75, ncells * 20)
-    #     n_cells = data.shape[1] // 20
-    #     # Get the indices of the 4th timepoint (index 3) for each cell
-    #     cue_indices = np.arange(n_cells) * 20 + cue_bins
-    #     # Extract those columns
-    #     cue_patterns[animal] = data[:, cue_indices]  # shape: (75, ncells)
-
-    # cue_scores, cue_scores_chance = decode_within(cue_patterns, labels, n_loops=5)
-
-    time_indices = np.arange(2, 7)  # 3rd to 7th timepoints
-    decoding_results = []
-    chance_results = []
     for t in time_indices:
         sliced_patterns = {}
-        for animal, data in patterns.items():
+        for ia, animal in enumerate(animal_list):
+            data = patterns[animal]
             n_cells = data.shape[1] // 20
-            cue_indices = np.arange(n_cells) * 20 + t
-            sliced_patterns[animal] = data[:, cue_indices]
+            time_indices = np.arange(n_cells) * 20 + t
+            sliced_patterns[animal] = data[:, time_indices]
         
-        scores, chance_scores = decode_within(sliced_patterns, labels, n_loops=5)  
-        decoding_results.append(np.mean(scores))
-        chance_results.append(np.mean(chance_scores))
-        
-    plt.figure(figsize=(7, 4))
-    plt.plot(time_indices, decoding_results, marker='o', linestyle='-', label='Accuracy')
-    plt.plot(time_indices, chance_results, marker='x', linestyle='--', label='Accuracy - Chance')
+            cs1 = data[0:n_trial_per_cue, time_indices]
+            cs2 = data[n_trial_per_cue: n_trial_per_cue*2, time_indices]
+            
+            performance = []
+            performance_chance = []
+            
+            for iiter in range(niteration):
+                performance_temp = []
+                performance_chance_temp = []
+                if np.isnan(subsampling):
+                    cell_idx = np.arange(n_cells)
+                else:
+                    n_sub = int(n_cells * subsampling)
+                    cell_idx = np.random.choice(n_cells, n_sub, replace=False)
+                
+                for itrial in range(n_trial_per_cue):
+                    cs1_train = np.delete(cs1, itrial, axis=0)[:, cell_idx]
+                    cs2_train = np.delete(cs2, itrial, axis=0)[:, cell_idx]
+                    traindata = np.vstack((cs1_train, cs2_train))
+                    trainlabel = np.array([0] * (n_trial_per_cue - 1) + [1] * (n_trial_per_cue - 1))
 
-    ax = plt.gca()  # Get current axes
-    ax.grid(False)
+                    testdata = np.vstack((cs1[itrial, cell_idx], cs2[itrial, cell_idx]))
+                    
+                    clf = LinearSVC().fit(traindata, trainlabel)
+                    testlabel = clf.predict(testdata)
+                    performance_temp.append(testlabel==[0,1])
+                    
+                    np.random.seed(seed)
+                    shufflelabel = np.random.permutation(trainlabel)
+                    clf_chance = LinearSVC().fit(traindata, shufflelabel)
+                    testlabel = clf_chance.predict(testdata)
+                    performance_chance_temp.append(testlabel==[0,1])
+                    
+                performance.append(np.mean(np.concatenate(performance_temp)))                
+                performance_chance.append(np.mean(np.concatenate(performance_chance_temp)))
+            
+            accuracy[ia].append(np.mean(performance))
+            accuracy_chance[ia].append(np.mean(performance_chance))
+            # scores, chance_scores = decode_within(sliced_patterns, labels, n_loops=5)  
+            # accuracy.append(np.mean(scores))
+            # chance_results.append(np.mean(chance_scores))
+    
+    # Mean and sem
+    accuracy = np.array(accuracy)              # shape: (n_animals, n_timepoints)
+    accuracy_chance = np.array(accuracy_chance)
+    
+    # 1. Mean and SEM
+    mean_real = np.nanmean(accuracy, axis=0)
+    sem_real = np.nanstd(accuracy, axis=0) / np.sqrt(accuracy.shape[0])
+
+    mean_chance = np.nanmean(accuracy_chance, axis=0)
+    sem_chance = np.nanstd(accuracy_chance, axis=0) / np.sqrt(accuracy_chance.shape[0])
+
+    # 2. Paired t-tests (real vs chance at each timepoint)
+    p_values = [stats.ttest_rel(accuracy[:, t], accuracy_chance[:, t]).pvalue for t in range(accuracy.shape[1])]
+    significance = ['*' if p < 0.05 else '' for p in p_values]    
+    
+    fig, ax = plt.subplots(figsize=(5, 3))
+    x = np.arange(len(accuracy[0]))
+    ax.errorbar(x, mean_real, yerr=sem_real, color='forestgreen', marker='o', linewidth=1, label='Real')
+    ax.errorbar(x, mean_chance, yerr=sem_chance, color='gray', marker='o', linestyle='--', linewidth=1, label='Chance')
+    
+    # Optional for significance scores
+    for i, sig in enumerate(significance):
+        if sig:
+            ax.text(i, max(mean_real[i], mean_chance[i]) + 0.025, sig, ha='center', va='bottom', fontsize=8)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(i-3) for i in x])  # integer tick labels
+    ax.set_xlabel('Time from cue onset (s)', fontsize=10)
+    ax.set_ylabel('Decoding accuracy', fontsize=10)
+    ax.set_ylim([0.4, 0.65])
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.set_xticklabels([-1, 0, 1, 2, 3])    
-    ax.set_xlabel('Time from cue onset (s)')
-    ax.set_ylabel('Mean Decoding Accuracy')
-
-    ax.tight_layout()
-    plt.show()
+    ax.legend(loc='upper right', bbox_to_anchor=(1.1, 1.0), frameon=False)
+    fig.tight_layout()
+    fig.savefig(os.path.join(result_dir, "CS1vsCS2_decoding.png"), format="png")
     
-
-    print(tot_scores)
-    print(tot_scores_chance)
-    print(score)
-    print(accuracy_score)
     
 if __name__ == "__main__":
     main()

@@ -191,380 +191,238 @@ def associate_cells_with_intervals(
 def main():
     # Load data and initialize parameters
     args = parse_args()
-    args.data_dir = "Z:\\2p\\experiment1\\MZ_CA1_WD_F3\d7"
-    args.num_planes = 4
-    args.num_flyback = 0
+    main_folder = "Z:\\2p\\experiment1"
+    animal = "MZ_CA1_WD_F3"
     
     # Select the imaging system
     # args.imaging_system = "INSS"
     args.imaging_system = "Bruker"
-
-    data_loader = DataLoader(args.data_dir, args.num_planes, args.num_flyback, args.imaging_system)
+    days = np.arange(10)
+    args.num_planes = 4
+    args.num_flyback = 0
     
+    for day in days:
+        args.data_dir = os.path.join(main_folder, animal, "d"+str(day+1))
+        data_loader = DataLoader(args.data_dir, args.num_planes, args.num_flyback, args.imaging_system)
 
-    # Make a result folder if if didn't exist
-    result_dir = os.path.join(args.data_dir, args.result_folder)
-    if not os.path.exists(result_dir):
-        os.makedirs(result_dir)
-    file_dir = os.path.join(args.data_dir, "files")
-    # Check if files folder exist
-    assert os.path.exists(file_dir), "Forgot to make a files folder :/"
-    
-    if os.path.exists(os.path.join(file_dir, "F.npy")):
-        Fcorr = np.load(os.path.join(file_dir, "F.npy"), allow_pickle=True)
-    else:
-        # Load all necessary variables.
-        F = data_loader.get_F()
-        Fneu = data_loader.get_Fneu()
-        stat = data_loader.get_stat()
-        is_cell = data_loader.get_is_cell()
-        # ops = data_loader.get_ops()
-        spks = data_loader.get_spks()
+        # Make a result folder if if didn't exist
+        result_dir = os.path.join(args.data_dir, args.result_folder)
+        if not os.path.exists(result_dir):
+            os.makedirs(result_dir)
+        file_dir = os.path.join(args.data_dir, "files")
+        # Check if files folder exist
+        assert os.path.exists(file_dir), "Forgot to make a files folder :/"
 
-        ## Preprocessing steps:
-        # Remove overlapping cells across planes
-        if args.num_planes > 1:
-            overlapping_cells = correct_overlapping_cells_across_planes(stat, is_cell, args.num_planes)
-
-        # Get F_cell and Fneu_cell only activity
-        F_cell, Fneu_cell, spks_cell = get_cell_only_activity(F, Fneu, spks, is_cell, args.num_planes)
-
-        # Get neuropil corrected F with neuropil coefficient
-        assert len(F_cell) == len(
-            Fneu_cell
-        ), "Fcell and Fneu cell must be the same length"
-        Fcorr = get_corrected_F(F_cell, Fneu_cell, args.num_planes, args.neucoeff)
-        for ip in range(args.num_planes):
-            assert len(F_cell[ip]) == len(Fcorr[ip])
-
-        F_to_save = os.path.join(args.data_dir, "files", "F.npy")
-        np.save(F_to_save, Fcorr)
-        # S_to_save = os.path.join(args.data_dir, "files", "spks.npy")
-        # np.save(S_to_save, spks_cell)
-
-    # # Plot multiple traces
-    # fig, axs = plt.subplots(8,1)
-    # for i in list(range(8)):
-    #     axs[i].plot(Fcorr[0][i])
-    # fig.savefig(os.path.join(result_dir, "example traces.eps"), format="eps")
-    voltages = data_loader.get_voltages()  # Computer
             
-    # Load behavioral data and timestamps for images and voltages
-    event_df = data_loader.get_event_df()  # Arduino
-    # Uncomment this if didn't save event file
-    # event_df = extract_cues_from_voltages(voltages)
-    # sio.savemat('cues.mat', event_df)     
-    im_ts, last_imts = data_loader.get_im_ts()  # image time stamps in second
-    
-    # # Correct `event_df` and imaging timestamps based on voltage recordings for Bruker
-    if args.imaging_system == "Bruker":
-        event_df, im_ts = correct_timestamps(event_df, im_ts, args.num_planes, args.imaging_system, voltages)
-    elif args.imaging_system == "INSS":
-        # Correct event_df based on imaging timestamps for INSS
-        event_df = correct_timestamps(event_df, last_imts, args.num_planes, args.imaging_system)
+        if os.path.exists(os.path.join(file_dir, "F.npy")):
+            Fcorr = np.load(os.path.join(file_dir, "F.npy"), allow_pickle=True)
+        else:
+            # Load all necessary variables.
+            F = data_loader.get_F()
+            Fneu = data_loader.get_Fneu()
+            stat = data_loader.get_stat()
+            is_cell = data_loader.get_is_cell()
+            # ops = data_loader.get_ops()
+            spks = data_loader.get_spks()
 
-    # # Extract all event time points from new event_df
-    [licks, CS1, CS2, CS3, sucrose, umami] = extract_events(event_df)
-    allCS = [CS1, CS2, CS3]
+            ## Preprocessing steps:
+            # Remove overlapping cells across planes
+            if args.num_planes > 1:
+                overlapping_cells = correct_overlapping_cells_across_planes(stat, is_cell, args.num_planes)
 
-    # plot_raw_licks(allCS, licks)
-    
-    # Downsample Fcorr to 5hz if not already
-    current_framerate = np.round(1 / ((im_ts[0][-1] - im_ts[0][0]) / len(im_ts[0]))).astype(
-        int)
-    if current_framerate != args.framerate:
-        Fcorr_5hz, new_im_ts = downsample_data(Fcorr, im_ts, current_framerate, args.framerate)
-        F_to_save = os.path.join(args.data_dir, "files", "F_5hz.npy")
-        np.save(F_to_save, Fcorr_5hz)
-        ts_to_save = os.path.join(args.data_dir, "files", "timestamps_5hz.npy") 
-        np.save(ts_to_save, new_im_ts)    
-    else:
-        Fcorr_5hz = Fcorr
-        new_im_ts = im_ts
-               
-    # Normalize signal
-    Fcorr_norm_down = normalize_signal(
-        Fcorr_5hz, args.num_planes, "median"
-    )  # can be z_score, median, robust_z_score
+            # Get F_cell and Fneu_cell only activity
+            F_cell, Fneu_cell, spks_cell = get_cell_only_activity(F, Fneu, spks, is_cell, args.num_planes)
 
-    # # Extract average Fcorr around each cue in all cuetypes for each cell, shape is nCS x nCell x nFrames
-    Fcorr_around_cue_down = extract_Fave_around_events(
-        allCS,
-        Fcorr_norm_down,
-        new_im_ts,
-        args.num_planes,
-        args.pre_cue_window,
-        args.post_cue_window,
-    )
-    # reshaping the data, output is nCell x nCS*nFrames
-    Fcorr_around_cue_down = Fcorr_around_cue_down.transpose(1, 2, 0).reshape(
-        Fcorr_around_cue_down.shape[1], -1, order="F"
-    )  
-    
-    file_to_save = os.path.join(args.data_dir, "files", "F_around_cue.npy") 
-    np.save(file_to_save, Fcorr_around_cue_down)  
+            # Get neuropil corrected F with neuropil coefficient
+            assert len(F_cell) == len(
+                Fneu_cell
+            ), "Fcell and Fneu cell must be the same length"
+            Fcorr = get_corrected_F(F_cell, Fneu_cell, args.num_planes, args.neucoeff)
+            for ip in range(args.num_planes):
+                assert len(F_cell[ip]) == len(Fcorr[ip])
 
-    # Normalize signal
-    Fcorr_norm = normalize_signal(
-        Fcorr, args.num_planes, "median"
-    )  # can be z_score, median, robust_z_score
+            F_to_save = os.path.join(args.data_dir, "files", "F.npy")
+            np.save(F_to_save, Fcorr)
+            # S_to_save = os.path.join(args.data_dir, "files", "spks.npy")
+            # np.save(S_to_save, spks_cell)
 
-    # # Extract average Fcorr around each cue in all cuetypes for each cell, shape is nCS x nCell x nFrames
-    Fcorr_around_cue= extract_Fave_around_events(
-        allCS,
-        Fcorr_norm,
-        im_ts,
-        args.num_planes,
-        args.pre_cue_window,
-        args.post_cue_window,
-    )
-    # reshaping the data, output is nCell x nCS*nFrames
-    Fcorr_around_cue = Fcorr_around_cue.transpose(1, 2, 0).reshape(
-        Fcorr_around_cue.shape[1], -1, order="F"
-    )  
-    
-    plt.plot(im_ts[0], Fcorr[0][0])
-    plt.plot(new_im_ts[0], Fcorr_5hz[0][0])
-    
-    # # Normalize inferred spike activities 
-    # spks_norm = normalize_signal(spks_cell, args.num_planes, "z_score")
-    # Spks_around_cue = extract_Fave_around_events(
-    #     allCS,
-    #     spks_norm,
-    #     im_ts,
-    #     args.num_planes,
-    #     args.pre_cue_window,
-    #     args.post_cue_window,
-    # )
-    # # reshaping the data, output is nCell x nCS*nFrames
-    # Spks_around_cue = Spks_around_cue.transpose(1, 2, 0).reshape(
-    #     Spks_around_cue.shape[1], -1, order="F"
-    # )  
-    # ## Plot behavior rasters
-    # fig_rawplot = plot_raw_licks(allCS, licks, args.pre_cue_window, 10)
-    # plt.close(fig_rawplot)
-    # fig_rawplot.savefig(
-    #     os.path.join(result_dir, "behavior_raster.png"), format="png"
-    # )
-
-    # Initialize parameters for plotting
-    window_size = int(
-        Fcorr_around_cue_down.shape[1] / len(args.trial_types)
-    )  # total frame for one cue, inherited in the Fcorr_around_the_cue
-    # if args.num_planes == 1:
-    #     framerate = np.round(1 / ((im_ts[-1] - im_ts[0]) / len(im_ts))).astype(int)
-    # else:
-    framerate = np.round(1 / ((new_im_ts[0][-1] - new_im_ts[0][0]) / len(new_im_ts[0]))).astype(
-            int)
-    frames_to_reward = args.delay_to_reward * framerate
-    pre_window_size = args.pre_cue_window * framerate
-    sortwindow = [
-        pre_window_size,
-        pre_window_size + frames_to_reward,
-    ]
-
-    # # Plot PSTH
-    fig_calcium_PSTH = plot_average_PSTH_around_interest_window(
-        args.trial_types,
-        Fcorr_around_cue_down,
-        window_size,
-        pre_window_size,
-        frames_to_reward,
-        sortwindow,
-        framerate,
-    )
-    fig_calcium_PSTH.savefig(os.path.join(result_dir, "PSTH_5hz.png"), format="png")
-    plt.close(fig_calcium_PSTH)
-
-    # Get the example cells based on sorted response, plot PSTH
-    example_cells = []
-    for cue_type in range(len(args.trial_types)):
-        idx_sortresponse = np.argsort(
-            np.mean(Fcorr_around_cue_down[:, cue_type*window_size+sortwindow[0]: cue_type*window_size+sortwindow[1]], axis=1)
-        )[::-1]
-        example_cells.extend(list(
-            idx_sortresponse[: int(np.floor(0.01 * len(idx_sortresponse)))]
-        ))
+        # # Plot multiple traces
+        # fig, axs = plt.subplots(8,1)
+        # for i in list(range(8)):
+        #     axs[i].plot(Fcorr[0][i])
+        # fig.savefig(os.path.join(result_dir, "example traces.eps"), format="eps")
+        voltages = data_loader.get_voltages()  # Computer
+                
+        # Load behavioral data and timestamps for images and voltages
+        event_df = data_loader.get_event_df()  # Arduino
         
-    # # Plot individual cell activities
-    # plot_after_cue = 10  # only plot up to 6s after the cue
-    plot_individual_trial_average_activity(
-        Fcorr_around_cue_down,
-        args.trial_types,
-        window_size,
-        pre_window_size,
-        frames_to_reward,
-        example_cells,
-        framerate,
-        result_dir,
-    )
-    
-    # plot_individual_cells_activity(
-    #     Fcorr_norm, allCS, im_idx_around_cue, example_cells, args.num_planes, plot_till_idx)
-    # F_example_cells = Fcorr_around_cue[example_cells, :]
-    # fig_calcium_PSTH_example_cells = plot_average_PSTH_around_interest_window(
-    #     args.trial_types,
-    #     F_example_cells,
-    #     window_size,
-    #     pre_window_size,
-    #     frames_to_reward,
-    #     sortwindow,
-    #     framerate,
-    # )
-    # fig_calcium_PSTH_example_cells.savefig(
-    #     os.path.join(result_dir, "PSTH_example_cells.png"), format="png"
-    # )
-    # plt.close(fig_calcium_PSTH_example_cells)
+        # # Uncomment this if didn't save event file
+        event_df = extract_cues_from_voltages(voltages)
+        sio.savemat('cues.mat', event_df)     
+        
+        im_ts, last_imts = data_loader.get_im_ts()  # image time stamps in second
+        
+        # # Correct `event_df` and imaging timestamps based on voltage recordings for Bruker
+        if args.imaging_system == "Bruker":
+            event_df, im_ts = correct_timestamps(event_df, im_ts, args.num_planes, args.imaging_system, voltages)
+        elif args.imaging_system == "INSS":
+            # Correct event_df based on imaging timestamps for INSS
+            event_df = correct_timestamps(event_df, last_imts, args.num_planes, args.imaging_system)
+
+        # # Extract all event time points from new event_df
+        [licks, CS1, CS2, CS3, sucrose, umami] = extract_events(event_df)
+        allCS = [CS1, CS2, CS3]
+
+        # plot_raw_licks(allCS, licks)
+        
+        # Downsample Fcorr to 5hz if not already
+        current_framerate = np.round(1 / ((im_ts[0][-1] - im_ts[0][0]) / len(im_ts[0]))).astype(
+            int)
+        if current_framerate != args.framerate:
+            Fcorr_5hz, new_im_ts = downsample_data(Fcorr, im_ts, current_framerate, args.framerate)
+            F_to_save = os.path.join(args.data_dir, "files", "F_5hz.npy")
+            np.save(F_to_save, Fcorr_5hz)
+            ts_to_save = os.path.join(args.data_dir, "files", "timestamps_5hz.npy") 
+            np.save(ts_to_save, new_im_ts)    
+        else:
+            Fcorr_5hz = Fcorr
+            new_im_ts = im_ts
+                
+        # Normalize signal
+        Fcorr_norm_down = normalize_signal(
+            Fcorr_5hz, args.num_planes, "median"
+        )  # can be z_score, median, robust_z_score
+
+        # # Extract average Fcorr around each cue in all cuetypes for each cell, shape is nCS x nCell x nFrames
+        Fcorr_around_cue_down = extract_Fave_around_events(
+            allCS,
+            Fcorr_norm_down,
+            new_im_ts,
+            args.num_planes,
+            args.pre_cue_window,
+            args.post_cue_window,
+        )
+        # reshaping the data, output is nCell x nCS*nFrames
+        Fcorr_around_cue_down = Fcorr_around_cue_down.transpose(1, 2, 0).reshape(
+            Fcorr_around_cue_down.shape[1], -1, order="F"
+        )  
+        
+        file_to_save = os.path.join(args.data_dir, "files", "F_around_cue.npy") 
+        np.save(file_to_save, Fcorr_around_cue_down)  
+
+        # Normalize signal
+        Fcorr_norm = normalize_signal(
+            Fcorr, args.num_planes, "median"
+        )  # can be z_score, median, robust_z_score
+
+        # # Extract average Fcorr around each cue in all cuetypes for each cell, shape is nCS x nCell x nFrames
+        Fcorr_around_cue= extract_Fave_around_events(
+            allCS,
+            Fcorr_norm,
+            im_ts,
+            args.num_planes,
+            args.pre_cue_window,
+            args.post_cue_window,
+        )
+        # reshaping the data, output is nCell x nCS*nFrames
+        Fcorr_around_cue = Fcorr_around_cue.transpose(1, 2, 0).reshape(
+            Fcorr_around_cue.shape[1], -1, order="F"
+        )  
+        
+        plt.plot(im_ts[0], Fcorr[0][0])
+        plt.plot(new_im_ts[0], Fcorr_5hz[0][0])
+        
+        # # Normalize inferred spike activities 
+        # spks_norm = normalize_signal(spks_cell, args.num_planes, "z_score")
+        # Spks_around_cue = extract_Fave_around_events(
+        #     allCS,
+        #     spks_norm,
+        #     im_ts,
+        #     args.num_planes,
+        #     args.pre_cue_window,
+        #     args.post_cue_window,
+        # )
+        # # reshaping the data, output is nCell x nCS*nFrames
+        # Spks_around_cue = Spks_around_cue.transpose(1, 2, 0).reshape(
+        #     Spks_around_cue.shape[1], -1, order="F"
+        # )  
+        # ## Plot behavior rasters
+        # fig_rawplot = plot_raw_licks(allCS, licks, args.pre_cue_window, 10)
+        # plt.close(fig_rawplot)
+        # fig_rawplot.savefig(
+        #     os.path.join(result_dir, "behavior_raster.png"), format="png"
+        # )
+
+        # Initialize parameters for plotting
+        window_size = int(
+            Fcorr_around_cue_down.shape[1] / len(args.trial_types)
+        )  # total frame for one cue, inherited in the Fcorr_around_the_cue
+        # if args.num_planes == 1:
+        #     framerate = np.round(1 / ((im_ts[-1] - im_ts[0]) / len(im_ts))).astype(int)
+        # else:
+        framerate = np.round(1 / ((new_im_ts[0][-1] - new_im_ts[0][0]) / len(new_im_ts[0]))).astype(
+                int)
+        frames_to_reward = args.delay_to_reward * framerate
+        pre_window_size = args.pre_cue_window * framerate
+        sortwindow = [
+            pre_window_size,
+            pre_window_size + frames_to_reward,
+        ]
+
+        # # Plot PSTH
+        fig_calcium_PSTH = plot_average_PSTH_around_interest_window(
+            args.trial_types,
+            Fcorr_around_cue_down,
+            window_size,
+            pre_window_size,
+            frames_to_reward,
+            sortwindow,
+            framerate,
+        )
+        fig_calcium_PSTH.savefig(os.path.join(result_dir, "PSTH_5hz.png"), format="png")
+        plt.close(fig_calcium_PSTH)
+
+        # Get the example cells based on sorted response, plot PSTH
+        example_cells = []
+        for cue_type in range(len(args.trial_types)):
+            idx_sortresponse = np.argsort(
+                np.mean(Fcorr_around_cue_down[:, cue_type*window_size+sortwindow[0]: cue_type*window_size+sortwindow[1]], axis=1)
+            )[::-1]
+            example_cells.extend(list(
+                idx_sortresponse[: int(np.floor(0.01 * len(idx_sortresponse)))]
+            ))
+            
+        # # Plot individual cell activities
+        # plot_after_cue = 10  # only plot up to 6s after the cue
+        plot_individual_trial_average_activity(
+            Fcorr_around_cue_down,
+            args.trial_types,
+            window_size,
+            pre_window_size,
+            frames_to_reward,
+            example_cells,
+            framerate,
+            result_dir,
+        )
+        
+        # plot_individual_cells_activity(
+        #     Fcorr_norm, allCS, im_idx_around_cue, example_cells, args.num_planes, plot_till_idx)
+        # F_example_cells = Fcorr_around_cue[example_cells, :]
+        # fig_calcium_PSTH_example_cells = plot_average_PSTH_around_interest_window(
+        #     args.trial_types,
+        #     F_example_cells,
+        #     window_size,
+        #     pre_window_size,
+        #     frames_to_reward,
+        #     sortwindow,
+        #     framerate,
+        # )
+        # fig_calcium_PSTH_example_cells.savefig(
+        #     os.path.join(result_dir, "PSTH_example_cells.png"), format="png"
+        # )
+        # plt.close(fig_calcium_PSTH_example_cells)
 
 
-    # ## PCA
-    # populationdata = Fcorr_around_cue
-    # pca = PCA(n_components=min(populationdata.shape[0], populationdata.shape[1]), whiten=True)
-    # pca.fit(populationdata)
-    # pca_vectors = pca.components_
-    # print("Number of PCs = %d" % (pca_vectors.shape[0]))
-    # x = 100 * pca.explained_variance_ratio_
-    # xprime = x - (x[0] + (x[-1] - x[0]) / (x.size - 1) * np.arange(x.size))
-    # num_retained_pcs = np.argmin(xprime)
-    # print("Number of PCs to keep = %d" % (num_retained_pcs))
-
-    # # # dimension-reduced data on the first principal components
-    # transformed_data = pca.transform(populationdata)
-    # np.save(os.path.join(file_dir, "transformed_data.npy"), transformed_data)
-
-    # # Plot PC screen plot
-    # fig_pc_screenplot = plot_PC_screenplot(pca, x, num_retained_pcs)
-    # fig_pc_screenplot.savefig(
-    #     os.path.join(result_dir, "PC_screenplot.png"), format="png"
-    # )
-
-    # # Plot PCs
-    # fig_pcs = plot_PCs(
-    #     pca_vectors,
-    #     num_retained_pcs,
-    #     args.trial_types,
-    #     window_size,
-    #     pre_window_size,
-    #     frames_to_reward,
-    #     framerate,
-    # )
-    # fig_pcs.savefig(os.path.join(result_dir, "PCs.png"), format="png")
-    # plt.close(fig_pcs)
-
-    # ## Clustering
-    # max_n_clusters = 9  # can run more but takes longer, 9 is relatively optimal
-    # possible_n_clusters = np.arange(2, max_n_clusters + 1)  # has to be at least two
-    # possible_n_nearest_neighbors = np.array(
-    #     [10, 50, 100]
-    # )  # depends on the size of the data
-    # silhouette_scores = np.nan * np.ones(
-    #     (possible_n_clusters.size, possible_n_nearest_neighbors.size)
-    # )
-
-    # # Fit clusters with Spectral Clustering
-    # for n_clustersidx, n_clusters in enumerate(possible_n_clusters):
-    #     for nnidx, nn in enumerate(possible_n_nearest_neighbors):
-    #         model = SpectralClustering(
-    #             n_clusters=n_clusters, affinity="nearest_neighbors", n_neighbors=nn
-    #         )  # separate clusters based on n-nearest neighbors
-    #         model.fit(transformed_data[:, :num_retained_pcs])
-    #         silhouette_scores[n_clustersidx, nnidx] = silhouette_score(
-    #             transformed_data[:, :num_retained_pcs], model.labels_, metric="cosine"
-    #         )  # silhouette coeff = (mean near-cluster distance - mean intra-cluster distance) / max of the two, 1 is the best, -1 is the worst
-    #         print(
-    #             "Done with numclusters = %d, num nearest neighbors = %d: score = %.3f"
-    #             % (n_clusters, nn, silhouette_scores[n_clustersidx, nnidx])
-    #         )
-    # print("Done with model fitting")
-
-    # temp = {}
-    # temp["possible_n_clusters"] = possible_n_clusters
-    # temp["possible_n_nearest_neighbors"] = possible_n_nearest_neighbors
-    # temp["silhouette_scores"] = silhouette_scores
-    # temp["shape"] = "cluster_nn"
-    # with open(os.path.join(file_dir, "silhouette_scores.pickle"), "wb") as f:
-    #     pickle.dump(temp, f)
-
-    # with open(os.path.join(file_dir, "silhouette_scores.pickle"), "rb") as f:
-    #     silhouette_scores = pickle.load(f)
-    # # Identify optimal parameters from the above parameter space
-    # temp = np.where(
-    #     silhouette_scores["silhouette_scores"]
-    #     == np.nanmax(silhouette_scores["silhouette_scores"])
-    # )
-    # n_clusters = silhouette_scores["possible_n_clusters"][temp[0][0]]
-    # n_nearest_neighbors = silhouette_scores["possible_n_nearest_neighbors"][temp[1][0]]
-    # print(
-    #     "Optimal number of clusters:",
-    #     n_clusters,
-    #     "; Optimal neighbors:",
-    #     n_nearest_neighbors,
-    # )
-
-    # transformed_data = np.load(os.path.join(file_dir, "transformed_data.npy"))
-    # # # Redo clustering with these optimal parameters
-    # model = SpectralClustering(
-    #     n_clusters=n_clusters,
-    #     affinity="nearest_neighbors",
-    #     n_neighbors=n_nearest_neighbors,
-    # )
-    # # model = KMeans(n_clusters=n_clusters)
-    # # model = AgglomerativeClustering(n_clusters=9,
-    # #                                 affinity='l1',
-    # #                                 linkage='average')
-    # model.fit(transformed_data[:, :num_retained_pcs])
-
-    # temp = silhouette_score(
-    #     transformed_data[:, :num_retained_pcs], model.labels_, metric="cosine"
-    # )
-    # print(
-    #     "Number of clusters = %d, average silhouette = %.3f"
-    #     % (len(set(model.labels_)), temp)
-    # )
-
-    # # # Save this optimal clustering model.
-    # # with open(os.path.join(file_dir, 'clusteringmodel.pickle'), 'wb') as f:
-    # #     pickle.dump(model, f)
-
-    # # Rename the clusters so that the first cluster will have the most
-    # # positive response and the last cluster will have the most negative response.
-    # newlabels = reorder_clusters(populationdata, pre_window_size, model.labels_)
-
-    # # Create a new variable containing all unique cluster labels
-    # uniquelabels = list(set(newlabels))
-    # np.save(os.path.join(file_dir, "clusterlabels.npy"), newlabels)
-
-    # # uniquelabels = np.load(os.path.join(file_dir, "clusterlabels.npy"))
-    # # Plot silhouette coefficient scores for each cluster
-    # fig_silouette = make_silhouette_plot(
-    #     transformed_data[:, :num_retained_pcs], model.labels_
-    # )
-    # fig_silouette.savefig(os.path.join(result_dir, "silouette.png"), format="png")
-    # plt.close(fig_silouette)
-
-    # # Plot activity clusters under each CS
-    # fig_activity_cluster = plot_activity_clusters(
-    #     populationdata,
-    #     uniquelabels,
-    #     newlabels,
-    #     args.trial_types,
-    #     [15, 100],
-    #     window_size,
-    #     pre_window_size,
-    #     frames_to_reward,
-    #     framerate,
-    # )
-    # fig_activity_cluster.savefig(
-    #     os.path.join(result_dir, "activity_clusters.png"), format="png"
-    # )
-    # plt.close(fig_activity_cluster)
-    
-    # # Plot all cluster pairs
-    # fig_cluster_pairs = plot_cluster_pairs(
-    #     transformed_data, uniquelabels, newlabels, num_retained_pcs
-    # )
-    # fig_cluster_pairs.savefig(os.path.join(result_dir, "clusters.png"), format="png")
-    # plt.close(fig_cluster_pairs)
 
 if __name__ == "__main__":
     main()
