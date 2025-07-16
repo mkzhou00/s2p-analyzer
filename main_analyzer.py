@@ -68,7 +68,8 @@ from s2p_utils.processing_utils import (
     normalize_signal,
     extract_Fave_around_events,
     reorder_clusters,
-    downsample_data
+    downsample_data,
+    extract_F_around_events
 )
 from plot_utils import (
     plot_raw_licks,
@@ -85,344 +86,250 @@ from plot_utils import (
 
 logger = logging.getLogger(__name__)
 
+# Initialize parameters
+framerate = 5
+trial_types = ["CS1+", "CS2+", "CS3-"]
+pre_cue_window = 3
+post_cue_window = 17
+delay_to_reward = 3
+min_cell_prob = 0.5
+neucoeff = 0.7
+cell_threshold = 10
 
-def parse_args():
-    """Parses arguments from command line."""
-    parser = argparse.ArgumentParser(description="Suite2p result analyzer.")
-    
-    parser.add_argument(
-        "--imaging_system",
-        type=str,
-        default="INSS",
-        help="Which scope imaged at: Bruker or INSS"
-    )
-    parser.add_argument(
-        "--data_dir",
-        type=str,
-        required=False,
-        # default="/Users/mzhou/Library/CloudStorage/OneDrive-UCSF/MZ_hpc_prism_M4/d5/",
-        default="Z:\\2p\\experiment1\\MZ_hpc_prism_M6\\d7\\",
-        help="Directory containing all the required files.",
-    )
-    parser.add_argument(
-        "--result_folder",
-        type=str,
-        default="result",
-        help="folder for saving figures and results",
-    )
-    parser.add_argument(
-        "--num_planes",
-        type=int,
-        default="4",
-        help="Number of planes recorded during each session",
-    )
-    parser.add_argument(
-        "--num_flyback",
-        type=int,
-        default=0,
-        help="Number of fly back planes at the end of z stack",
-    )
-    parser.add_argument(
-        "--min_cell_prob",
-        type=float,
-        default=0.5,
-        help="Minimum probability to identify an ROI as a cell.",
-    )
-    parser.add_argument(
-        "--pre_cue_window",
-        type=float,
-        default=3,
-        help="Interested time region before a cue starts, needs to be negative if including time before cue start (Second)",
-    )
-    parser.add_argument(
-        "--post_cue_window",
-        type=float,
-        default=17,
-        help="Interested time region after a cue starts. (Second)",
-    )
-    parser.add_argument(
-        "--delay_to_reward",
-        type=int,
-        default=3,
-        help="Number of seconds from cue onset to reward onset",
-    )
-    parser.add_argument(
-        "--framerate", type=int, default=5, help="Targetted frame rate for analysis across animals across days, 5hz"
-    )
-    parser.add_argument(
-        "--trial_types",
-        type=list,
-        default=["CS1+", "CS2+", "CS3-"],
-        help="Trial types of the experiment",
-    )
-    parser.add_argument(
-        "--neucoeff",
-        type=float,
-        default=0.7,
-        help="neuropil coefficient factor",
-    )
-    parser.add_argument(
-        "--cell_threshold",
-        type=int,
-        default=10,
-        help="threshold percentage difference between F and Fneu to count as a valid cell",
-    )
-    return parser.parse_args()
+# Choose one of the imaging system here
+imaging_system = "INSS"
+# imaging_system = "Bruker"
 
+main_folder = "Z:\\2p\\experiment1"
+animal = "MZ_CA1_WD_M5"
+days = [9, 10]
+num_planes_list = [3, 3]
+num_flyback_list = [3, 3]
 
-def associate_cells_with_intervals(
-    interval: list,
-    time: float,
-    cell_indices_with_activities: "dict[int, set]",
-    intervals_with_detected_cells: "dict[int, set]",
-    cell_idx: int,
-):
-    for interval_idx, (start, end) in enumerate(interval):
-        if time >= start and time <= end:
-            if cell_idx not in cell_indices_with_activities:
-                cell_indices_with_activities[cell_idx] = set()
-            cell_indices_with_activities[cell_idx].add(interval_idx)
+# Loading data
+for id, day in enumerate(days):
+    data_dir = os.path.join(main_folder, animal, "d"+str(day))
+    num_planes = num_planes_list[id]
+    data_loader = DataLoader(data_dir, num_planes, num_flyback_list[id], imaging_system)
 
-            if interval_idx not in intervals_with_detected_cells:
-                intervals_with_detected_cells[interval_idx] = []
-            intervals_with_detected_cells[interval_idx].add(cell_idx)
+    # Make a result folder if if didn't exist
+    result_dir = os.path.join(data_dir, 'result')
+    if not os.path.exists(result_dir):
+        os.makedirs(result_dir)
+    file_dir = os.path.join(data_dir, "files")
+    # Check if files folder exist
+    assert os.path.exists(file_dir), "Forgot to make a files folder :/"
 
+        
+    if os.path.exists(os.path.join(file_dir, "F.npy")):
+        Fcorr = np.load(os.path.join(file_dir, "F.npy"), allow_pickle=True)
+    else:
+        # Load all necessary variables.
+        F = data_loader.get_F()
+        Fneu = data_loader.get_Fneu()
+        stat = data_loader.get_stat()
+        is_cell = data_loader.get_is_cell()
+        # ops = data_loader.get_ops()
+        spks = data_loader.get_spks()
 
-def main():
-    # Load data and initialize parameters
-    args = parse_args()
-    main_folder = "Z:\\2p\\experiment1"
-    animal = "MZ_CA1_WD_F3"
-    
-    # Select the imaging system
-    # args.imaging_system = "INSS"
-    args.imaging_system = "Bruker"
-    days = np.arange(10)
-    args.num_planes = 4
-    args.num_flyback = 0
-    
-    for day in days:
-        args.data_dir = os.path.join(main_folder, animal, "d"+str(day+1))
-        data_loader = DataLoader(args.data_dir, args.num_planes, args.num_flyback, args.imaging_system)
+        ## Preprocessing steps:
+        # Remove overlapping cells across planes
+        if num_planes > 1:
+            overlapping_cells = correct_overlapping_cells_across_planes(stat, is_cell, num_planes)
 
-        # Make a result folder if if didn't exist
-        result_dir = os.path.join(args.data_dir, args.result_folder)
-        if not os.path.exists(result_dir):
-            os.makedirs(result_dir)
-        file_dir = os.path.join(args.data_dir, "files")
-        # Check if files folder exist
-        assert os.path.exists(file_dir), "Forgot to make a files folder :/"
+        # Get F_cell and Fneu_cell only activity
+        F_cell, Fneu_cell, spks_cell = get_cell_only_activity(F, Fneu, spks, is_cell, num_planes)
 
+        # Get neuropil corrected F with neuropil coefficient
+        assert len(F_cell) == len(
+            Fneu_cell
+        ), "Fcell and Fneu cell must be the same length"
+        Fcorr = get_corrected_F(F_cell, Fneu_cell, num_planes, neucoeff)
+        for ip in range(num_planes):
+            assert len(F_cell[ip]) == len(Fcorr[ip])
+
+        F_to_save = os.path.join(data_dir, "files", "F.npy")
+        np.save(F_to_save, Fcorr)
+        # S_to_save = os.path.join(data_dir, "files", "spks.npy")
+        # np.save(S_to_save, spks_cell)
+
+    # # Plot multiple traces
+    # fig, axs = plt.subplots(8,1)
+    # for i in list(range(8)):
+    #     axs[i].plot(Fcorr[0][i])
+    # fig.savefig(os.path.join(result_dir, "example traces.eps"), format="eps")
             
-        if os.path.exists(os.path.join(file_dir, "F.npy")):
-            Fcorr = np.load(os.path.join(file_dir, "F.npy"), allow_pickle=True)
-        else:
-            # Load all necessary variables.
-            F = data_loader.get_F()
-            Fneu = data_loader.get_Fneu()
-            stat = data_loader.get_stat()
-            is_cell = data_loader.get_is_cell()
-            # ops = data_loader.get_ops()
-            spks = data_loader.get_spks()
-
-            ## Preprocessing steps:
-            # Remove overlapping cells across planes
-            if args.num_planes > 1:
-                overlapping_cells = correct_overlapping_cells_across_planes(stat, is_cell, args.num_planes)
-
-            # Get F_cell and Fneu_cell only activity
-            F_cell, Fneu_cell, spks_cell = get_cell_only_activity(F, Fneu, spks, is_cell, args.num_planes)
-
-            # Get neuropil corrected F with neuropil coefficient
-            assert len(F_cell) == len(
-                Fneu_cell
-            ), "Fcell and Fneu cell must be the same length"
-            Fcorr = get_corrected_F(F_cell, Fneu_cell, args.num_planes, args.neucoeff)
-            for ip in range(args.num_planes):
-                assert len(F_cell[ip]) == len(Fcorr[ip])
-
-            F_to_save = os.path.join(args.data_dir, "files", "F.npy")
-            np.save(F_to_save, Fcorr)
-            # S_to_save = os.path.join(args.data_dir, "files", "spks.npy")
-            # np.save(S_to_save, spks_cell)
-
-        # # Plot multiple traces
-        # fig, axs = plt.subplots(8,1)
-        # for i in list(range(8)):
-        #     axs[i].plot(Fcorr[0][i])
-        # fig.savefig(os.path.join(result_dir, "example traces.eps"), format="eps")
+    # Load behavioral data and timestamps for images
+    event_df = data_loader.get_event_df()  # Arduino
+    im_ts, last_imts = data_loader.get_im_ts()  # image time stamps in second
+    
+    # # Correct `event_df` and imaging timestamps based on voltage recordings for Bruker
+    if imaging_system == "Bruker":
         voltages = data_loader.get_voltages()  # Computer
-                
-        # Load behavioral data and timestamps for images and voltages
-        event_df = data_loader.get_event_df()  # Arduino
-        
-        # # Uncomment this if didn't save event file
-        event_df = extract_cues_from_voltages(voltages)
-        sio.savemat('cues.mat', event_df)     
-        
-        im_ts, last_imts = data_loader.get_im_ts()  # image time stamps in second
-        
-        # # Correct `event_df` and imaging timestamps based on voltage recordings for Bruker
-        if args.imaging_system == "Bruker":
-            event_df, im_ts = correct_timestamps(event_df, im_ts, args.num_planes, args.imaging_system, voltages)
-        elif args.imaging_system == "INSS":
-            # Correct event_df based on imaging timestamps for INSS
-            event_df = correct_timestamps(event_df, last_imts, args.num_planes, args.imaging_system)
+        event_df, im_ts = correct_timestamps(event_df, im_ts, num_planes, imaging_system, voltages)   
+    elif imaging_system == "INSS":
+        # Correct event_df based on imaging timestamps for INSS
+        event_df = correct_timestamps(event_df, last_imts, num_planes, imaging_system)
 
-        # # Extract all event time points from new event_df
-        [licks, CS1, CS2, CS3, sucrose, umami] = extract_events(event_df)
-        allCS = [CS1, CS2, CS3]
+    # # Uncomment this if didn't save event file
+    # event_df = extract_cues_from_voltages(voltages)
+    # sio.savemat('cues.mat', event_df)     
+    
+    # # Extract all event time points from new event_df
+    [licks, CS1, CS2, CS3, sucrose, umami] = extract_events(event_df)
+    allCS = [CS1, CS2, CS3]
 
-        # plot_raw_licks(allCS, licks)
-        
-        # Downsample Fcorr to 5hz if not already
-        current_framerate = np.round(1 / ((im_ts[0][-1] - im_ts[0][0]) / len(im_ts[0]))).astype(
-            int)
-        if current_framerate != args.framerate:
-            Fcorr_5hz, new_im_ts = downsample_data(Fcorr, im_ts, current_framerate, args.framerate)
-            F_to_save = os.path.join(args.data_dir, "files", "F_5hz.npy")
-            np.save(F_to_save, Fcorr_5hz)
-            ts_to_save = os.path.join(args.data_dir, "files", "timestamps_5hz.npy") 
-            np.save(ts_to_save, new_im_ts)    
-        else:
-            Fcorr_5hz = Fcorr
-            new_im_ts = im_ts
-                
-        # Normalize signal
-        Fcorr_norm_down = normalize_signal(
-            Fcorr_5hz, args.num_planes, "median"
-        )  # can be z_score, median, robust_z_score
-
-        # # Extract average Fcorr around each cue in all cuetypes for each cell, shape is nCS x nCell x nFrames
-        Fcorr_around_cue_down = extract_Fave_around_events(
-            allCS,
-            Fcorr_norm_down,
-            new_im_ts,
-            args.num_planes,
-            args.pre_cue_window,
-            args.post_cue_window,
-        )
-        # reshaping the data, output is nCell x nCS*nFrames
-        Fcorr_around_cue_down = Fcorr_around_cue_down.transpose(1, 2, 0).reshape(
-            Fcorr_around_cue_down.shape[1], -1, order="F"
-        )  
-        
-        file_to_save = os.path.join(args.data_dir, "files", "F_around_cue.npy") 
-        np.save(file_to_save, Fcorr_around_cue_down)  
-
-        # Normalize signal
-        Fcorr_norm = normalize_signal(
-            Fcorr, args.num_planes, "median"
-        )  # can be z_score, median, robust_z_score
-
-        # # Extract average Fcorr around each cue in all cuetypes for each cell, shape is nCS x nCell x nFrames
-        Fcorr_around_cue= extract_Fave_around_events(
-            allCS,
-            Fcorr_norm,
-            im_ts,
-            args.num_planes,
-            args.pre_cue_window,
-            args.post_cue_window,
-        )
-        # reshaping the data, output is nCell x nCS*nFrames
-        Fcorr_around_cue = Fcorr_around_cue.transpose(1, 2, 0).reshape(
-            Fcorr_around_cue.shape[1], -1, order="F"
-        )  
-        
-        plt.plot(im_ts[0], Fcorr[0][0])
-        plt.plot(new_im_ts[0], Fcorr_5hz[0][0])
-        
-        # # Normalize inferred spike activities 
-        # spks_norm = normalize_signal(spks_cell, args.num_planes, "z_score")
-        # Spks_around_cue = extract_Fave_around_events(
-        #     allCS,
-        #     spks_norm,
-        #     im_ts,
-        #     args.num_planes,
-        #     args.pre_cue_window,
-        #     args.post_cue_window,
-        # )
-        # # reshaping the data, output is nCell x nCS*nFrames
-        # Spks_around_cue = Spks_around_cue.transpose(1, 2, 0).reshape(
-        #     Spks_around_cue.shape[1], -1, order="F"
-        # )  
-        # ## Plot behavior rasters
-        # fig_rawplot = plot_raw_licks(allCS, licks, args.pre_cue_window, 10)
-        # plt.close(fig_rawplot)
-        # fig_rawplot.savefig(
-        #     os.path.join(result_dir, "behavior_raster.png"), format="png"
-        # )
-
-        # Initialize parameters for plotting
-        window_size = int(
-            Fcorr_around_cue_down.shape[1] / len(args.trial_types)
-        )  # total frame for one cue, inherited in the Fcorr_around_the_cue
-        # if args.num_planes == 1:
-        #     framerate = np.round(1 / ((im_ts[-1] - im_ts[0]) / len(im_ts))).astype(int)
-        # else:
-        framerate = np.round(1 / ((new_im_ts[0][-1] - new_im_ts[0][0]) / len(new_im_ts[0]))).astype(
-                int)
-        frames_to_reward = args.delay_to_reward * framerate
-        pre_window_size = args.pre_cue_window * framerate
-        sortwindow = [
-            pre_window_size,
-            pre_window_size + frames_to_reward,
-        ]
-
-        # # Plot PSTH
-        fig_calcium_PSTH = plot_average_PSTH_around_interest_window(
-            args.trial_types,
-            Fcorr_around_cue_down,
-            window_size,
-            pre_window_size,
-            frames_to_reward,
-            sortwindow,
-            framerate,
-        )
-        fig_calcium_PSTH.savefig(os.path.join(result_dir, "PSTH_5hz.png"), format="png")
-        plt.close(fig_calcium_PSTH)
-
-        # Get the example cells based on sorted response, plot PSTH
-        example_cells = []
-        for cue_type in range(len(args.trial_types)):
-            idx_sortresponse = np.argsort(
-                np.mean(Fcorr_around_cue_down[:, cue_type*window_size+sortwindow[0]: cue_type*window_size+sortwindow[1]], axis=1)
-            )[::-1]
-            example_cells.extend(list(
-                idx_sortresponse[: int(np.floor(0.01 * len(idx_sortresponse)))]
-            ))
+    # plot_raw_licks(allCS, licks)
+    
+    # Downsample Fcorr to 5hz if not already
+    current_framerate = np.round(1 / ((im_ts[0][-1] - im_ts[0][0]) / len(im_ts[0]))).astype(
+        int)
+    if current_framerate != framerate:
+        Fcorr_5hz, new_im_ts = downsample_data(Fcorr, im_ts, current_framerate, framerate)
+        F_to_save = os.path.join(data_dir, "files", "F_5hz.npy")
+        np.save(F_to_save, Fcorr_5hz)
+        ts_to_save = os.path.join(data_dir, "files", "timestamps_5hz.npy") 
+        np.save(ts_to_save, new_im_ts)    
+    else:
+        Fcorr_5hz = Fcorr
+        new_im_ts = im_ts
+        F_to_save = os.path.join(data_dir, "files", "F_5hz.npy")
+        np.save(F_to_save, Fcorr_5hz)
+        ts_to_save = os.path.join(data_dir, "files", "timestamps_5hz.npy") 
+        np.save(ts_to_save, new_im_ts)    
             
-        # # Plot individual cell activities
-        # plot_after_cue = 10  # only plot up to 6s after the cue
-        plot_individual_trial_average_activity(
-            Fcorr_around_cue_down,
-            args.trial_types,
-            window_size,
-            pre_window_size,
-            frames_to_reward,
-            example_cells,
-            framerate,
-            result_dir,
-        )
+    # Normalize signal
+    Fcorr_norm_down = normalize_signal(
+        Fcorr_5hz, num_planes, "median"
+    )  # can be z_score, median, robust_z_score
+
+    # # Extract average Fcorr around each cue in all cuetypes for each cell, shape is nCS x nCell x nFrames
+    Fcorr_around_cue_down = extract_F_around_events(
+        allCS,
+        Fcorr_norm_down,
+        new_im_ts,
+        num_planes,
+        pre_cue_window,
+        post_cue_window,
+    )
+    # reshaping the data, output is nCell x nCS*nFrames
+    Fcorr_around_cue_down = Fcorr_around_cue_down.transpose(1, 2, 0).reshape(
+        Fcorr_around_cue_down.shape[1], -1, order="F"
+    )  
+    
+    file_to_save = os.path.join(data_dir, "files", "F_around_cue.npy") 
+    np.save(file_to_save, Fcorr_around_cue_down)  
+
+    # # Normalize signal
+    # Fcorr_norm = normalize_signal(
+    #     Fcorr, num_planes, "median"
+    # )  # can be z_score, median, robust_z_score
+
+    # # # Extract average Fcorr around each cue in all cuetypes for each cell, shape is nCS x nCell x nFrames
+    # Fcorr_around_cue= extract_Fave_around_events(
+    #     allCS,
+    #     Fcorr_norm,
+    #     im_ts,
+    #     num_planes,
+    #     pre_cue_window,
+    #     post_cue_window,
+    # )
+    # # reshaping the data, output is nCell x nCS*nFrames
+    # Fcorr_around_cue = Fcorr_around_cue.transpose(1, 2, 0).reshape(
+    #     Fcorr_around_cue.shape[1], -1, order="F"
+    # )  
+    
+    # plt.plot(im_ts[0], Fcorr[0][0])
+    # plt.plot(new_im_ts[0], Fcorr_5hz[0][0])
+    
+    # # Normalize inferred spike activities 
+    # spks_norm = normalize_signal(spks_cell, num_planes, "z_score")
+    # Spks_around_cue = extract_Fave_around_events(
+    #     allCS,
+    #     spks_norm,
+    #     im_ts,
+    #     num_planes,
+    #     pre_cue_window,
+    #     post_cue_window,
+    # )
+    # # reshaping the data, output is nCell x nCS*nFrames
+    # Spks_around_cue = Spks_around_cue.transpose(1, 2, 0).reshape(
+    #     Spks_around_cue.shape[1], -1, order="F"
+    # )  
+    # ## Plot behavior rasters
+    # fig_rawplot = plot_raw_licks(allCS, licks, pre_cue_window, 10)
+    # plt.close(fig_rawplot)
+    # fig_rawplot.savefig(
+    #     os.path.join(result_dir, "behavior_raster.png"), format="png"
+    # )
+
+    # # Initialize parameters for plotting
+    # window_size = int(
+    #     Fcorr_around_cue_down.shape[1] / len(trial_types)
+    # )  # total frame for one cue, inherited in the Fcorr_around_the_cue
+    # # if num_planes == 1:
+    # #     framerate = np.round(1 / ((im_ts[-1] - im_ts[0]) / len(im_ts))).astype(int)
+    # # else:
+    # framerate = np.round(1 / ((new_im_ts[0][-1] - new_im_ts[0][0]) / len(new_im_ts[0]))).astype(
+    #         int)
+    # frames_to_reward = delay_to_reward * framerate
+    # pre_window_size = pre_cue_window * framerate
+    # sortwindow = [
+    #     pre_window_size,
+    #     pre_window_size + frames_to_reward,
+    # ]
+
+    # # # Plot PSTH
+    # fig_calcium_PSTH = plot_average_PSTH_around_interest_window(
+    #     trial_types,
+    #     Fcorr_around_cue_down,
+    #     window_size,
+    #     pre_window_size,
+    #     frames_to_reward,
+    #     sortwindow,
+    #     framerate,
+    # )
+    # fig_calcium_PSTH.savefig(os.path.join(result_dir, "PSTH_5hz.png"), format="png")
+    # plt.close(fig_calcium_PSTH)
+
+    # # Get the example cells based on sorted response, plot PSTH
+    # example_cells = []
+    # for cue_type in range(len(trial_types)):
+    #     idx_sortresponse = np.argsort(
+    #         np.mean(Fcorr_around_cue_down[:, cue_type*window_size+sortwindow[0]: cue_type*window_size+sortwindow[1]], axis=1)
+    #     )[::-1]
+    #     example_cells.extend(list(
+    #         idx_sortresponse[: int(np.floor(0.01 * len(idx_sortresponse)))]
+    #     ))
         
-        # plot_individual_cells_activity(
-        #     Fcorr_norm, allCS, im_idx_around_cue, example_cells, args.num_planes, plot_till_idx)
-        # F_example_cells = Fcorr_around_cue[example_cells, :]
-        # fig_calcium_PSTH_example_cells = plot_average_PSTH_around_interest_window(
-        #     args.trial_types,
-        #     F_example_cells,
-        #     window_size,
-        #     pre_window_size,
-        #     frames_to_reward,
-        #     sortwindow,
-        #     framerate,
-        # )
-        # fig_calcium_PSTH_example_cells.savefig(
-        #     os.path.join(result_dir, "PSTH_example_cells.png"), format="png"
-        # )
-        # plt.close(fig_calcium_PSTH_example_cells)
+    # # # Plot individual cell activities
+    # # plot_after_cue = 10  # only plot up to 6s after the cue
+    # plot_individual_trial_average_activity(
+    #     Fcorr_around_cue_down,
+    #     trial_types,
+    #     window_size,
+    #     pre_window_size,
+    #     frames_to_reward,
+    #     example_cells,
+    #     framerate,
+    #     result_dir,
+    # )
+    
+    # plot_individual_cells_activity(
+    #     Fcorr_norm, allCS, im_idx_around_cue, example_cells, num_planes, plot_till_idx)
+    # F_example_cells = Fcorr_around_cue[example_cells, :]
+    # fig_calcium_PSTH_example_cells = plot_average_PSTH_around_interest_window(
+    #     trial_types,
+    #     F_example_cells,
+    #     window_size,
+    #     pre_window_size,
+    #     frames_to_reward,
+    #     sortwindow,
+    #     framerate,
+    # )
+    # fig_calcium_PSTH_example_cells.savefig(
+    #     os.path.join(result_dir, "PSTH_example_cells.png"), format="png"
+    # )
+    # plt.close(fig_calcium_PSTH_example_cells)
 
 
-
-if __name__ == "__main__":
-    main()
