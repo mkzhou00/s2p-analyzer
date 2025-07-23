@@ -237,3 +237,57 @@ class DataLoader:
                 csv = get_file_with_type(".csv", self.file_dir)
                 self.voltages = pd.read_csv(csv)
             return self.voltages
+
+
+def load_population_data(animal_list, data_dir, result_dir, trial_types, target_frames, window_size, subtrials=None):
+    
+    pop_path = os.path.join(result_dir, "populationdata.npy")
+    id_path = os.path.join(result_dir, "animal_id.npy")
+    
+    if os.path.exists(os.path.join(result_dir, "populationdata.npy")):
+        return np.load(pop_path, allow_pickle=True), np.load(id_path, allow_pickle=True)
+
+    else:
+        populationdata_list = []
+        animal_id = []
+                    
+        for animal in animal_list:
+            
+            file_dir = os.path.join(data_dir, animal, "files", "F_around_cue_raw.npy")
+            rawdata = np.load(file_dir, allow_pickle=True)  # shape: (trials, cells, frames)
+            
+            if subtrials is None or subtrials =='all':
+                subtrials_to_use = rawdata.shape[1]
+            else:
+                subtrials_to_use = subtrials
+            
+            if subtrials_to_use > rawdata.shape[1]:
+                raise ValueError(f"Requested subtrials ({subtrials_to_use}) exceeds available trials ({rawdata.shape[1]}) for animal {animal}")
+            
+            subset_ave = rawdata[:, :subtrials_to_use, :, :].mean(axis=1)
+            tempdata = subset_ave.transpose(1, 0, 2).reshape(subset_ave.shape[1], -1)
+
+            ncells, nframes = tempdata.shape
+            
+            if nframes < target_frames:
+                pad_width = target_frames - nframes
+                tempdata = np.pad(tempdata, ((0, 0), (0, pad_width)), mode='constant', constant_values=0)
+            elif nframes > target_frames:
+                tempdata = tempdata[:, :target_frames]
+            
+            # Perform baseline subtraction of the 3s pre CS period
+            baseline_window = 15 # 3s for 5hz
+            for i in range(len(trial_types)):
+                start = i * window_size
+                end = start + window_size
+                baseline = np.mean(tempdata[:,  start:start + baseline_window], axis=1, keepdims=True)
+                tempdata[:, start:end] -= baseline
+            populationdata_list.append(tempdata)
+            animal_id.extend([animal] * ncells) # track neuron to specific animal
+            
+        populationdata  = np.vstack(populationdata_list)
+        animal_id = np.array(animal_id)
+        np.save(pop_path, populationdata)
+        np.save(id_path, animal_id)
+        
+        return populationdata, animal_id

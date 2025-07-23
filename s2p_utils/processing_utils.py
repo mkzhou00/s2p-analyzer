@@ -431,29 +431,35 @@ def extract_F_around_events(
     num_planes: int,
     pre_cue_window: int,
     post_cue_window: int,
-    binsize=1,
-    framerate=30
+    binsize=None,
+    framerate=5
 ):
     """
-    This function first generates Fcorrected traces around each cues based on images indexes,
-    and append each cell's activity under each cue.
+    This function extract F traces around cue events, with optional binning in milliseconds for decoding.
 
     Args:
-        CS: all CS trials
-        F: Fcorrected trace for all planes all cells
-        im_ts: image timestamps used to calculate image indexes
-        num_planes: number of planes
-        pre_cue_window = seconds before cue onset
-        post_cue_window = seconds after cue onset
-        binsize =  to average frames 
+        CS: list of CS trials grouped by type
+        F: calcium trace data [plane][cell][frame]
+        im_ts: image timestamps
+        num_planes: number of imaging planes
+        pre_cue_window: seconds before cue onset
+        post_cue_window: seconds after cue onset
+        binsize: bin size in milliseconds (set to None to disable binning)
+        framerate: frame rate in Hz
 
     Returns:
-    Fcorrected_around_cue with the structure of len(CS), number of cells, timepoints
-
+        F_trial: array with shape 
+                 [n_CS_types][n_trials][n_cells][n_timepoints]
     """
     windowsize = pre_cue_window + post_cue_window
-    binframes = binsize * framerate # number of frames to bin over
+    total_frames = int(windowsize * framerate)    
     
+    # Binning to get average F for each bin, this is for decoding purposes mostly
+    do_binning = binsize is not None and binsize > 0
+    binframes = int((binsize / 1000) * framerate) if do_binning else 1
+    if do_binning and binframes < 1:
+        raise ValueError("binsize too small for given framerate — results in < 1 frame/bin.")
+
     # Extract time around each cue and sorted by CS type, shape is numCS --> len trials
     interest_intervals = extract_interest_time_intervals(
         CS, pre_cue_window, post_cue_window
@@ -481,21 +487,33 @@ def extract_F_around_events(
                     F_temp = F[ip][cell][
                         cue_ts[trial]
                     ]  # F for cell in the plane, of this trial in this cue type (framenumber x )
-                    F_temp1 = []
-                    for ibin in range(windowsize//binsize):
-                        start = ibin * binframes
-                        end = (ibin + 1) * binframes
-                        frame_slice = F_temp[start:end]
-                        # Check if the slice is nonempty
-                        if frame_slice.size == 0 or np.all(np.isnan(frame_slice)):
-                            F_temp1.append(0.0)  # or np.nan, or skip
-                        else:
-                            F_temp1.append(np.nanmean(frame_slice))
-        
-                    F_trial[cue_type][trial].append(F_temp1)
-                # F_ave_around_cues[cue_type].append(cellave)
-    F_trial = np.array(F_trial)
-    return F_trial
+                    frame_indices = cue_ts[trial]
+                    
+                    if do_binning:
+                        F_temp_binned = []
+                        for ibin in range(0, total_frames, binframes):
+                            F_slice = F_temp[ibin:(ibin + binframes)]
+                            if F_slice.size == 0 or np.all(np.isnan(F_slice)):
+                                F_temp_binned.append(0.0)
+                            else:
+                                F_temp_binned.append(np.nanmean(F_slice))
+                        F_trial[cue_type][trial].append(F_temp_binned)
+                    else:                        
+                        F_trial[cue_type][trial].append(F_temp)
+            
+    # This is padding the function incase the timepoint of certain neuron is not the same with the target time points
+    max_len = total_frames
+    for cs in range(len(F_trial)):
+        for trial in range(len(F_trial[cs])):
+            for cell in range(len(F_trial[cs][trial])):
+                series = F_trial[cs][trial][cell]
+                if len(series) < max_len:
+                    padded = np.pad(series, (0, max_len - len(series)), constant_values=0)
+                    F_trial[cs][trial][cell] = padded
+                elif len(series) > max_len:
+                    F_trial[cs][trial][cell] = series[:max_len]
+                
+    return np.array(F_trial)
 
 
 
@@ -515,7 +533,7 @@ def reorder_clusters(populationdata, pre_window_size, rawlabels):
     return outputlabels
 
 
-def downsample_data(F, im_ts, current_rate, target_rate):
+def downsample_data(F, im_ts, current_rate, target_rate, binning_tolerance=0.2):
    
     F_downsampled = []
     im_ts_downsampled = []
@@ -523,28 +541,46 @@ def downsample_data(F, im_ts, current_rate, target_rate):
     for ip, F_plane in enumerate(F):
         n_cells, n_timepoints = np.array(F_plane).shape
 
-        # If the current rate can be evenly divided by the target framerate, then average frames and use the first timestamp
+        ratio = current_rate / target_rate
+        use_binning = np.isclose(ratio, round(ratio), atol=binning_tolerance)
+
+        # If the current rate can be evenly divided by the target framerate or that its close to the integer with margin of 0.2, use binning
+        # to average the values to the first point 
         if np.remainder(current_rate, target_rate) == 0:
-            bin_size = int(np.divide(current_rate, target_rate))
             
-            # only include the first time point in each bin
-            t_orig = im_ts[ip]
-            new_n_timepoints = len(t_orig) // bin_size
-            t_new = t_orig[::bin_size][:new_n_timepoints]     
-                   
-            F_down = np.zeros((n_cells, new_n_timepoints))
+            bin_size = int(round(ratio))
+            n_bins = n_timepoints // bin_size
+            t_orig = im_ts[ip][:n_bins * bin_size]
+            t_new = t_orig[::bin_size]
+
+            F_down = np.zeros((n_cells, n_bins))
             
             for i in range(n_cells):
-                # Reshape into bins and average
-                binned = F_plane[i][:new_n_timepoints * bin_size].reshape(new_n_timepoints, bin_size)
-                f_down = np.nanmean(binned, axis=1)
+                f_trunc = F_plane[i][:n_bins * bin_size]
+                binned = f_trunc.reshape(n_bins, bin_size)
+                f_down = np.nanmean(binned, axis=1)           # shape: (n_bins,)
                 F_down[i] = np.round(f_down, 5)
+            
+            # bin_size = int(np.divide(current_rate, target_rate))
+            
+            # # only include the first time point in each bin
+            # t_orig = im_ts[ip]
+            # new_n_timepoints = len(t_orig) // bin_size
+            # t_new = t_orig[::bin_size][:new_n_timepoints]     
+                   
+            # F_down = np.zeros((n_cells, new_n_timepoints))
+            
+            # for i in range(n_cells):
+            #     # Reshape into bins and average
+            #     binned = F_plane[i][:new_n_timepoints * bin_size].reshape(new_n_timepoints, bin_size)
+            #     f_down = np.nanmean(binned, axis=1)
+            #     F_down[i] = np.round(f_down, 5)
         
+        # if the current rate is not divided evenly or close to integer divide, interpolate time points to fit the target framerate
         else:
-            duration = im_ts[ip][-1]
-            new_n_timepoints = int(duration * target_rate)
-
             t_orig = im_ts[ip]
+            duration = t_orig[-1] - t_orig[0]            
+            new_n_timepoints = int(duration * target_rate)
             t_new = np.linspace(t_orig[0], t_orig[-1], new_n_timepoints)
             
             F_down = np.zeros((n_cells, new_n_timepoints))
@@ -558,3 +594,16 @@ def downsample_data(F, im_ts, current_rate, target_rate):
         F_downsampled.append(F_down)
 
     return F_downsampled, im_ts_downsampled
+
+
+def filter_trials_by_minITI(cs_events, min_ITI):
+    filtered_CS = []
+    # Filter all cues with ITI longer than post window here
+    for cs in enumerate(cs_events):
+        itis = np.diff(cs)
+        keep_mask = np.ones(len(cs), dtype=bool)
+        # First trial is always kept (no ITI before it)
+        keep_mask[1:] = itis >= min_ITI
+        filtered_CS.append(cs[keep_mask])
+        
+    return filtered_CS
