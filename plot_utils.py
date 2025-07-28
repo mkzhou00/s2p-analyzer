@@ -13,6 +13,7 @@ from sklearn.manifold import TSNE
 
 sns.set_style("ticks")
 import matplotlib as mpl
+import scipy.stats as stats
 
 mpl.rcParams["axes.titlesize"] = 12
 mpl.rcParams["axes.labelsize"] = 10
@@ -682,3 +683,40 @@ def plot_cluster_pairs(transformed_data, uniquelabels, newlabels, num_retained_p
     fig_cluster_pairs.tight_layout()
 
     return fig_cluster_pairs
+
+
+def plot_decoding_accuracy_across_time(accuracy, accuracy_chance):
+    
+    # calculate mean and sem averaging animals
+    mean_real = np.nanmean(accuracy, axis=0)
+    sem_real = np.nanstd(accuracy, axis=0) / np.sqrt(accuracy.shape[0])
+    mean_chance = np.nanmean(accuracy_chance, axis=0)
+    sem_chance = np.nanstd(accuracy_chance, axis=0) / np.sqrt(accuracy_chance.shape[0])
+
+    # do paired t-tests real vs chance at each timepoint
+    p_values = [stats.ttest_rel(accuracy[:, t], accuracy_chance[:, t]).pvalue for t in range(accuracy.shape[1])]
+    significance = ['*' if p < 0.05 else '' for p in p_values]    
+
+    fig, ax = plt.subplots(figsize=(5, 3))
+    x = np.arange(len(accuracy[0]))
+    ax.errorbar(x, mean_real, yerr=sem_real, color='forestgreen', marker='o', linewidth=1, label='Real')
+    ax.errorbar(x, mean_chance, yerr=sem_chance, color='gray', marker='o', linestyle='--', linewidth=1, label='Chance')
+
+    # Optional for significance scores
+    for i, sig in enumerate(significance):
+        if sig:
+            ax.text(i, max(mean_real[i], mean_chance[i]) + 0.025, sig, ha='center', va='bottom', fontsize=10)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(i-3) for i in x])  # integer tick labels
+    ax.set_xlabel('Time from cue onset (s)', fontsize=10)
+    ax.set_ylabel('Decoding accuracy', fontsize=10)
+    # ax.set_ylim([0.4, 0.65])
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.legend(loc='upper right', bbox_to_anchor=(1.2, 1.2), frameon=False)
+    # title_str = f"{decoding_pair[0]} vs {decoding_pair[1]} decoding"
+    # ax.set_title(title_str, fontsize=12)
+    fig.tight_layout()
+    
+    return fig

@@ -58,6 +58,8 @@ from s2p_utils.processing_utils import (
     normalize_signal,
     extract_Fave_around_events,
     reorder_clusters,
+    build_knn,
+    get_initial_cluster_labels
 )
 from plot_utils import (
     plot_raw_licks,
@@ -71,21 +73,12 @@ from plot_utils import (
     plot_individual_trial_average_activity,
 )
 
-def build_knn(X, k):
-    """Return sparse k-NN connectivity graph (CSR)."""
-    return kneighbors_graph(
-        X, k,
-        mode="connectivity",
-        include_self=True,    # matches SpectralClustering default
-        n_jobs=-1
-    )
 
 logger = logging.getLogger(__name__)
 
 
 # Initialize parameters
 data_dir = "Z:\\2p\\experiment1\\"
-learning_stage = "late"
 pre_cue_window = 3
 post_cue_window = 17
 delay_to_reward = 3
@@ -95,7 +88,7 @@ framerate = 5
 target_frames = 300 # Should be the total time window * framerate * nCS, so 300 for the current settings
 trial_types = ["CS1+", "CS2+", "CS3-"]
 learning_stage = 'early'
-cluster_algorithm = "Discretization" #KMeans
+
 
 # Set animals and days for early and late learning
 if learning_stage == "early":
@@ -104,24 +97,27 @@ if learning_stage == "early":
         "MZ_CA1_WD_F3\\d1",
         "MZ_CA1_WD_M4\\d1",
         "MZ_CA1_WD_M5\\d1",
-        "MZ_CA1_WD_M6\\d2",
+        "MZ_CA1_WD_M6\\d1",
         "MZ_CA1_WD_M7\\d1",
         "MZ_CA1_WD_M8\\d1",
-        "MZ_CA1_WD_JB_54\\d3",
-        "MZ_CA1_WD_JB_55\\d3"
+        "MZ_CA1_WD_JB_54\\d1",
+        "MZ_CA1_WD_JB_55\\d1"
     ]
+    subtrials = 'first10'
+    
 elif learning_stage == "late":
     result_dir = "Z:\\2p\\experiment1\\population_data\\late learning\\"
     animal_list = [
         "MZ_CA1_WD_F3\\d7",
         "MZ_CA1_WD_M4\\d5",
-        "MZ_CA1_WD_M5\\d6",
-        "MZ_CA1_WD_M6\\d6",
-        "MZ_CA1_WD_M7\\d5",
+        "MZ_CA1_WD_M5\\d5",
+        "MZ_CA1_WD_M6\\d5",
+        "MZ_CA1_WD_M7\\d6",
         "MZ_CA1_WD_M8\\d6",
         "MZ_CA1_WD_JB_54\\d8",
         "MZ_CA1_WD_JB_55\\d12"
     ]   
+    subtrials = 'last10'
 
 # For plotting
 window_size = 100
@@ -129,12 +125,17 @@ frames_to_reward = delay_to_reward * framerate
 pre_window_size = pre_cue_window * framerate
         
 # Load and concatenate population data across animals
-populationdata, animal_id = load_population_data(animal_list, data_dir, result_dir, trial_types, target_frames, window_size, subtrials=10)
+populationdata, animal_id = load_population_data(animal_list, data_dir, result_dir, trial_types, target_frames, window_size, subtrials=subtrials)
+# optional 
+cs1_data = populationdata[:, :window_size]
+cs2_data = populationdata[:, window_size:2*window_size]
+cs3_data = populationdata[:, 2*window_size:]
+
+train_data = np.hstack([cs1_data, cs3_data])
+trial_types = ['CS1+', 'CS3-']
 
 # Define cache file paths before running PCA
 pca_path = os.path.join(result_dir, "pca_model.pickle")
-clustering_path = os.path.join(result_dir, "clustering_model.pickle")
-labels_path = os.path.join(result_dir, "clusterlabels.npy")
 transformed_path = os.path.join(result_dir, "transformed_data.npy")
 
 ## -------------------------------------------------------------------------------------------------------
@@ -148,15 +149,15 @@ if all(os.path.exists(p) for p in [pca_path, transformed_path]):
         
     transformed_data = np.load(transformed_path)   
 else:
-    pca = PCA(n_components=min(populationdata.shape[0], populationdata.shape[1]), whiten=True)
-    pca.fit(populationdata)
+    pca = PCA(n_components=min(train_data.shape[0], train_data.shape[1]), whiten=True)
+    pca.fit(train_data)
     pca_vectors = pca.components_
     x = 100 * pca.explained_variance_ratio_
     xprime = x - (x[0] + (x[-1] - x[0]) / (x.size - 1) * np.arange(x.size))
     num_retained_pcs = np.argmin(xprime)
 
     # # dimension-reduced data on the first principal components
-    transformed_data = pca.transform(populationdata)
+    transformed_data = pca.transform(train_data)
     np.save(os.path.join(result_dir, "transformed_data.npy"), transformed_data)
     
     # Save PCA model
@@ -188,6 +189,12 @@ else:
 
 ## -------------------------------------------------------------------------------------------------------
 ## STEP 2: Clustering
+# Choose model, options are "SC_discretize", "SC_kmeans", 
+# "KMeans", "AgglomerativeClustering"
+clustering_model = "SC_discretize"
+clustering_path = os.path.join(result_dir, f"clustering_model_{clustering_model}.pickle")
+labels_path = os.path.join(result_dir, f"clusterlabels_{clustering_model}.npy")
+
 if all(os.path.exists(p) for p in [clustering_path, labels_path]):    
     
     with open(clustering_path, "rb") as f:
@@ -204,41 +211,25 @@ else:
     # iTers = 100
     possible_n_clusters = np.arange(2, max_n_clusters + 1)  # has to be at least two
     possible_n_nearest_neighbors = np.array(
-        [100, 200, 300, 500, 750, 1000, 1500, 2000, 2500]
+        [100, 200, 300, 500, 750, 1000]
     )  # depends on the size of the data, for a data with 300 neurons, the above is fine
     
     silhouette_scores = np.nan*np.ones((possible_n_clusters.size,
                                         possible_n_nearest_neighbors.size,
                                         ))
-    discrete_labels = np.nan*np.ones((possible_n_clusters.size,
-                            possible_n_nearest_neighbors.size,
-                            transformed_data.shape[0]))
     
     
-    # Fit clusters with Spectral Clustering
+    # Fit clusters with your clustering model of choice
     for nnidx, nn in enumerate(possible_n_nearest_neighbors):
         G = build_knn(transformed_data[:,:num_retained_pcs], nn)
 
-        for n_clustersidx, n_clusters in enumerate(possible_n_clusters):
-            # model = SpectralClustering(
-            #     n_clusters=n_clusters, affinity="nearest_neighbors", n_neighbors=nn
-            # )  # separate clusters based on n-nearest neighbors
-            # model.fit(transformed_data[:, :num_retained_pcs])
-            # silhouette_scores[n_clustersidx, nnidx] = silhouette_score(
-            #     transformed_data[:, :num_retained_pcs], model.labels_, metric="cosine"
-            # )  
+        for n_clustersidx, n_clusters in enumerate(possible_n_clusters): 
+            
+            temp_data = transformed_data[:, :num_retained_pcs]
+            labels = get_initial_cluster_labels(temp_data, clustering_model, n_clusters, nn, G=G)
+            
             # silhouette coeff is  calculated as (mean near-cluster distance - mean intra-cluster distance) / max of the two, 
-            # 1 is the best, -1 is the worst
-            embed = spectral_embedding(
-                    G,
-                    n_components=n_clusters,
-                    eigen_solver="arpack",      # use same solver as SC
-                    drop_first=False            # keep all dimensions
-                )
-
-            # for N in range(iTers):
-            labels = discretize(embed, random_state=None)
-            discrete_labels[n_clustersidx, nnidx,:] = labels
+            # 1 is the best, -1 is the worst `                
             silhouette_scores[n_clustersidx, nnidx] = silhouette_score(transformed_data[:,:num_retained_pcs],
                                                                     labels,
                                                                     metric='cosine') 
@@ -285,6 +276,7 @@ else:
     #     n_clusters=n_clusters,
     #     affinity="nearest_neighbors",
     #     n_neighbors=n_nearest_neighbors,
+    #     assign_labels='kmeans'
     # )
     # model = KMeans(n_clusters=n_clusters)
     # model = AgglomerativeClustering(n_clusters=9,
@@ -316,7 +308,7 @@ else:
 
     # Rename the clusters so that the first cluster will have the most
     # positive response and the last cluster will have the most negative response.
-    newlabels = reorder_clusters(populationdata, pre_window_size, model.labels_)
+    newlabels = reorder_clusters(train_data, pre_window_size, model.labels_)
     # Create a new variable containing all unique cluster labels
     uniquelabels = list(set(newlabels))
     np.save(os.path.join(result_dir, "clusterlabels.npy"), newlabels)
@@ -357,7 +349,7 @@ plt.close(fig_silouette)
 
 # Plot activity clusters under each CS
 fig_activity_cluster = plot_activity_clusters(
-    populationdata,
+    train_data,
     uniquelabels,
     newlabels,
     trial_types,
@@ -372,11 +364,12 @@ fig_activity_cluster.savefig(
 )
 plt.close(fig_activity_cluster)
 
+
 # Plot all cluster pairs
 fig_cluster_pairs = plot_cluster_pairs(
     transformed_data, uniquelabels, newlabels, num_retained_pcs
 )
-fig_cluster_pairs.savefig(os.path.join(result_dir, "clusters.png"), format="png")
+fig_cluster_pairs.savefig(os.path.join(result_dir, "cluster_pairs.png"), format="png")
 plt.close(fig_cluster_pairs)
 
 

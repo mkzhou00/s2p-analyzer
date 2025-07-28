@@ -257,14 +257,17 @@ def load_population_data(animal_list, data_dir, result_dir, trial_types, target_
             rawdata = np.load(file_dir, allow_pickle=True)  # shape: (trials, cells, frames)
             
             if subtrials is None or subtrials =='all':
-                subtrials_to_use = rawdata.shape[1]
-            else:
+                subtrials_to_use = slice(None)
+            elif subtrials == 'first10':
+                subtrials_to_use = slice(0,10)
+            elif subtrials == 'last10':
+                subtrials_to_use = slice(-10, None)
+            elif isinstance(subtrials, (list, np.ndarray)):
                 subtrials_to_use = subtrials
-            
-            if subtrials_to_use > rawdata.shape[1]:
-                raise ValueError(f"Requested subtrials ({subtrials_to_use}) exceeds available trials ({rawdata.shape[1]}) for animal {animal}")
-            
-            subset_ave = rawdata[:, :subtrials_to_use, :, :].mean(axis=1)
+            else:
+                raise ValueError(f"Invalid subtrials value: {subtrials}")    
+                    
+            subset_ave = rawdata[:, subtrials_to_use, :, :].mean(axis=1)
             tempdata = subset_ave.transpose(1, 0, 2).reshape(subset_ave.shape[1], -1)
 
             ncells, nframes = tempdata.shape
