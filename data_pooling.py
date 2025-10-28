@@ -94,38 +94,56 @@ learning_stage = 'early'
 if learning_stage == "early":
     result_dir = "Z:\\2p\\experiment1\\population_data\\early learning\\"
     animal_list = [
-        "MZ_CA1_WD_F3\\d1",
-        "MZ_CA1_WD_M4\\d1",
-        "MZ_CA1_WD_M5\\d1",
-        "MZ_CA1_WD_M6\\d1",
-        "MZ_CA1_WD_M7\\d1",
-        "MZ_CA1_WD_M8\\d1",
-        "MZ_CA1_WD_JB_54\\d1",
-        "MZ_CA1_WD_JB_55\\d1"
+        # "MZ_CA1_WD_F3",
+        # "MZ_CA1_WD_M4",
+        "MZ_CA1_WD_M5",
+        "MZ_CA1_WD_M6",
+        "MZ_CA1_WD_M7",
+        "MZ_CA1_WD_M8",
+        "MZ_CA1_WD_JB_54",
+        "MZ_CA1_WD_JB_55"
     ]
+    day_list = np.ones(8, dtype=int)
     subtrials = 'first10'
-    
+
+elif learning_stage == "intermediate":
+    result_dir = "Z:\\2p\\experiment1\\population_data\\intermediate learning\\"
+    animal_list = [
+        "MZ_CA1_WD_F3",
+        "MZ_CA1_WD_M4",
+        "MZ_CA1_WD_M5",
+        "MZ_CA1_WD_M6",
+        "MZ_CA1_WD_M7",
+        "MZ_CA1_WD_M8",
+        "MZ_CA1_WD_JB_54",
+        "MZ_CA1_WD_JB_55"
+    ]
+    day_list = [3, 1, 2, 3, 2, 2, 3, 8]
+    subtrials = 'all'
+
 elif learning_stage == "late":
     result_dir = "Z:\\2p\\experiment1\\population_data\\late learning\\"
     animal_list = [
-        "MZ_CA1_WD_F3\\d7",
-        "MZ_CA1_WD_M4\\d5",
-        "MZ_CA1_WD_M5\\d5",
-        "MZ_CA1_WD_M6\\d5",
-        "MZ_CA1_WD_M7\\d6",
-        "MZ_CA1_WD_M8\\d6",
-        "MZ_CA1_WD_JB_54\\d8",
-        "MZ_CA1_WD_JB_55\\d12"
+        "MZ_CA1_WD_F3",
+        "MZ_CA1_WD_M4",
+        "MZ_CA1_WD_M5",
+        "MZ_CA1_WD_M6",
+        "MZ_CA1_WD_M7",
+        "MZ_CA1_WD_M8",
+        "MZ_CA1_WD_JB_54",
+        "MZ_CA1_WD_JB_55"
     ]   
-    subtrials = 'last10'
-
+    day_list = [7, 5, 6, 6, 6, 6, 8, 12]
+    subtrials = 'all'
+    
+    
 # For plotting
 window_size = 100
 frames_to_reward = delay_to_reward * framerate
 pre_window_size = pre_cue_window * framerate
         
 # Load and concatenate population data across animals
-populationdata, animal_id = load_population_data(animal_list, data_dir, result_dir, trial_types, target_frames, window_size, subtrials=subtrials)
+populationdata, animal_id = load_population_data(animal_list, day_list, data_dir, result_dir, trial_types, target_frames, window_size, pre_cue_window, framerate, subtrials=subtrials)
 # optional 
 cs1_data = populationdata[:, :window_size]
 cs2_data = populationdata[:, window_size:2*window_size]

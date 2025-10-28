@@ -99,9 +99,9 @@ neucoeff = 0.7
 main_folder = "Z:\\2p\\experiment1"
 
 # Animal specific parameters
-animal = "MZ_CA1_WD_JB_55"
-days = [1,2,3,12]
-num_planes_list = np.ones(12, dtype=int)*1
+animal = "MZ_CA1_WD_F3"
+days = [2]
+num_planes_list = np.ones(12, dtype=int)*4
 num_flyback_list = np.ones(12, dtype=int)*0
 
 if animal == "MZ_CA1_WD_F3":
@@ -123,7 +123,7 @@ for id, day in enumerate(days):
         os.makedirs(result_dir)
     file_dir = os.path.join(data_dir, "files")
     # Check if files folder exist
-    assert os.path.exists(flate ile_dir), "Forgot to make a files folder :/"
+    assert os.path.exists(file_dir), "Forgot to make a files folder :/"
 
     if os.path.exists(os.path.join(file_dir, "F.npy")):
         Fcorr = np.load(os.path.join(file_dir, "F.npy"), allow_pickle=True)
@@ -218,18 +218,18 @@ for id, day in enumerate(days):
     )  # can be z_score, median, robust_z_score
 
     # # # Extract Faround each cue in all cuetypes for each cell, shape is nCS_types x ntrials x nCell x nFrames
-    # F_around_cue = extract_F_around_events(
-    #     allCS,
-    #     Fcorr_norm,
-    #     new_im_ts,
-    #     num_planes,
-    #     pre_cue_window,
-    #     post_cue_window,
-    #     binsize=None,
-    #     framerate=framerate
-    # )
-    # file_to_save = os.path.join(data_dir, "files", "F_around_cue_raw.npy") 
-    # np.save(file_to_save, F_around_cue)  
+    F_around_cue = extract_F_around_events(
+        allCS,
+        Fcorr_norm,
+        new_im_ts,
+        num_planes,
+        pre_cue_window,
+        post_cue_window,
+        binsize=None,
+        framerate=framerate
+    )
+    file_to_save = os.path.join(data_dir, "files", "F_around_cue_raw.npy") 
+    np.save(file_to_save, F_around_cue)  
 
 
     ## ----------------------------------------------------------------------------

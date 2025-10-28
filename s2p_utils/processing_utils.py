@@ -476,10 +476,12 @@ def extract_F_around_events(
     )
 
     # Create a list for each cs type and each trial, using None to hold the place. Shape is nCS --> ntrial within each CS
-    F_trial = [[] for _ in CS]
-    mintrial_for_decoding = min(len(cs) for cs in CS)
-    for i in range(len(CS)):
-        F_trial[i] = [[] for _ in range(mintrial_for_decoding)]
+    # F_trial = [[] for _ in CS]
+    # mintrial_for_decoding = min(len(cs) for cs in CS)
+    # for i in range(len(CS)):
+    #     F_trial[i] = [[] for _ in range(mintrial_for_decoding)]
+        
+    F_trial = [[[] for _ in range(len(cs))] for cs in CS]
                 
     for cue_type, cs in enumerate(CS):  # cue_type = 0,1,2 (CS1, CS2, CS3)
         for ip in range(num_planes):
@@ -488,7 +490,7 @@ def extract_F_around_events(
             ]  # image indexes for all trials in this cue type, holds same for all cells within the plane (trial number x framenumber)
             for cell in range(len(F[ip])):
                 # cell_F = []
-                for trial in range(mintrial_for_decoding):
+                for trial in range(len(cs)):
                     F_temp = F[ip][cell][
                         cue_ts[trial]
                     ]  # F for cell in the plane, of this trial in this cue type (framenumber x )
@@ -517,7 +519,7 @@ def extract_F_around_events(
                 elif len(series) > max_len:
                     F_trial[cs][trial][cell] = series[:max_len]
                 
-    return np.array(F_trial)
+    return F_trial
 
 
 def reorder_clusters(populationdata, pre_window_size, rawlabels):
@@ -611,25 +613,48 @@ def filter_trials_by_minITI(cs_events, min_ITI):
     return filtered_CS
 
 
+# def extract_patterns_for_decoding(animal_data, time_slice):
+#     """
+#     animal_data: np.array of shape (3, n_trials, n_cells, nframes)
+#     time_slice: slice object (e.g., slice(0, 5) for cue period)
+    
+#     Returns:
+#         X: (3 * n_trials, n_cells * len(time_slice))
+#         y: (3 * n_trials,)
+#     """
+#     n_CS, n_trials, n_cells, _ = animal_data.shape
+#     period_data = animal_data[..., time_slice]  # shape: (3, n_trials, n_cells, n_timepoints)
+#     reshaped = period_data.reshape(n_CS * n_trials, n_cells * period_data.shape[-1])
+#     labels = np.repeat(np.arange(n_CS), n_trials)  # 0, 1, 2 for CS1+, CS2+, CS3−
+#     return reshaped, labels
+
+
 def extract_patterns_for_decoding(animal_data, time_slice):
     """
-    animal_data: np.array of shape (3, n_trials, n_cells, 20)
+    animal_data: list of 3 arrays, each shape (n_trials_cs, n_cells, n_frames)
     time_slice: slice object (e.g., slice(0, 5) for cue period)
     
     Returns:
-        X: (3 * n_trials, n_cells * len(time_slice))
-        y: (3 * n_trials,)
+        X: (total_trials, n_cells * len(time_slice))
+        y: (total_trials,)
     """
-    n_CS, n_trials, n_cells, _ = animal_data.shape
-    period_data = animal_data[..., time_slice]  # shape: (3, n_trials, n_cells, n_timepoints)
-    reshaped = period_data.reshape(n_CS * n_trials, n_cells * period_data.shape[-1])
-    labels = np.repeat(np.arange(n_CS), n_trials)  # 0, 1, 2 for CS1+, CS2+, CS3−
-    return reshaped, labels
+    X_list = []
+    y_list = []
+    for cs_type, cs_trials in enumerate(animal_data):
+        # cs_trials: shape (n_trials_cs, n_cells, n_frames)
+        period_data = cs_trials[..., time_slice]  # (n_trials_cs, n_cells, n_timepoints)
+        reshaped = period_data.reshape(period_data.shape[0], -1)  # (n_trials_cs, n_cells * n_timepoints)
+        X_list.append(reshaped)
+        y_list.append(np.full(period_data.shape[0], cs_type))
+    X = np.concatenate(X_list, axis=0)  # (total_trials, n_cells * n_timepoints)
+    y = np.concatenate(y_list, axis=0)  # (total_trials,)
+    return X, y
 
 
 def get_animal_decoding_dict(
     animal_list,
     patterns,
+    labels,
     trial_types,
     total_bins_length,
     decode_by_cluster=False,
@@ -643,6 +668,8 @@ def get_animal_decoding_dict(
     Returns:
         decoded_animals (dict): keys are animal IDs, values contain data, local cell indices, and metadata.
     """
+    cue_labels = [0, 1, 2]
+    
     if decode_by_cluster:
         animal_cell_starts = {}
         start_idx = 0
@@ -654,15 +681,15 @@ def get_animal_decoding_dict(
     decoded_animals = {}
 
     for animal in animal_list:
-        data = patterns[animal]
-        n_trial_per_cue = data.shape[0] // len(trial_types)
-        total_cells = data.shape[1] // total_bins_length
-
-        assert data.shape[1] % total_bins_length == 0, \
-            f"Unexpected number of features in {animal}: {data.shape[1]}"
+        data = patterns[animal]  # list of arrays, each [n_trials_for_cue, n_cells * total_bins_length]
+        n_trial_per_cue = [(labels[animal] == cue).sum() for cue in cue_labels]
+        # Check that each array is shaped correctly
+        # for d in data:
+        #     assert d.shape[1] % total_bins_length == 0, \
+                # f"Unexpected number of features in {animal}: {d.shape[1]}"
+        total_cells = data[0].shape[0] / total_bins_length # assumes all cues have same cell count
 
         if decode_by_cluster:
-            # Get global indices of matching cells
             global_mask = (
                 (np.char.find(animal_id.astype(str), animal) >= 0) &
                 np.isin(cluster_labels, selected_clusters)
@@ -671,7 +698,6 @@ def get_animal_decoding_dict(
             local_start = animal_cell_starts[animal]
             local_indices = global_indices - local_start
             
-            # Remove invalid indices that exceed the number of cells in this animal
             invalid_mask = local_indices >= total_cells
             if np.any(invalid_mask):
                 print(f"[{animal}] Warning: {np.sum(invalid_mask)} cluster-assigned cells exceed available cells ({total_cells}).")
@@ -684,9 +710,9 @@ def get_animal_decoding_dict(
             local_indices = np.arange(total_cells)
 
         decoded_animals[animal] = {
-            "data": data,
+            "data": data,  # list of arrays per cue
             "local_cell_indices": local_indices,
-            "n_trial_per_cue": n_trial_per_cue,
+            "n_trial_per_cue": n_trial_per_cue,  # list, one entry per cue type
             "n_cells": len(local_indices),
         }
 
@@ -726,6 +752,7 @@ def do_time_resolved_decoding(
         accuracy (np.ndarray): Shape (n_animals, n_timepoints).
         accuracy_chance (np.ndarray): Same shape, for shuffled labels.
     """
+    trial_types = ["CS1", "CS2", "CS3"]
     accuracy = [[] for _ in animal_list]
     accuracy_chance = [[] for _ in animal_list]
 
@@ -736,47 +763,47 @@ def do_time_resolved_decoding(
             data = d["data"]
             local_cell_indices = d["local_cell_indices"]
             n_cells = d["n_cells"]
-            n_trial_per_cue = d["n_trial_per_cue"]
-
-            time_indices = local_cell_indices * total_bins_length + t
-
-            cue_map = {
-                "CS1": data[0:n_trial_per_cue, time_indices],
-                "CS2": data[n_trial_per_cue: 2 * n_trial_per_cue, time_indices],
-                "CS3": data[2 * n_trial_per_cue: 3 * n_trial_per_cue, time_indices],
-            }
-            train_a = cue_map[decoding_pair[0]]
-            train_b = cue_map[decoding_pair[1]]
-
-            # Use decoding_pair if testing_pair is not specified
-            if testing_pair is None:
-                test_a, test_b = train_a, train_b
-            else:
-                test_a = cue_map[testing_pair[0]]
-                test_b = cue_map[testing_pair[1]]
-                
-            # Subset of trials to decode
-            if subtrials == 'first10':
-                train_a = train_a[:10]
-                train_b = train_b[:10]
-            elif subtrials == 'last10':
-                train_a = train_a[-10:]
-                train_b = train_b[-10:]
-            elif isinstance(subtrials, (list, np.ndarray)):
-                train_a = train_a[subtrials]
-                train_b = train_b[subtrials]
-            elif subtrials == 'all' or subtrials == None:
-                pass # use all trials
-            else:
-                raise ValueError(f"Invalid trial_subset value: {subtrials}")         
+            total_trial_per_cue = d["n_trial_per_cue"]
             
+            time_indices = local_cell_indices * total_bins_length + t
+            starts = np.cumsum([0] + list(total_trial_per_cue[:-1]))
+            ends = np.cumsum(list(total_trial_per_cue))
+            cue_map = {
+                cue: data[starts[i]:ends[i], time_indices]
+                for i, cue in enumerate(trial_types)
+            }
+
+            train_a = cue_map[decoding_pair[0]]
+            train_b_raw = cue_map[decoding_pair[1]]
+
             performance = []
             performance_chance = []
 
             for iiter in range(niteration):
-                performance_temp = []
-                performance_chance_temp = []
+                # Subsampling for CS3
+                # for CS3, randomly sample n trials for this round
+                train_b = train_b_raw
+                if decoding_pair[1] == "CS3" and train_b_raw.shape[0] > train_a.shape[0]:
+                    np.random.seed(seed + iiter)
+                    selected_idx = np.random.choice(train_b_raw.shape[0], train_a.shape[0], replace=False)
+                    train_b = train_b_raw[selected_idx]
+                    
+                # Apply subtrials after sampling
+                if subtrials == 'first10':
+                    train_a = train_a[:10]
+                    train_b = train_b[:10]
+                elif subtrials == 'last10':
+                    train_a = train_a[-10:]
+                    train_b = train_b[-10:]
+                elif isinstance(subtrials, (list, np.ndarray)):
+                    train_a = train_a[subtrials]
+                    train_b = train_b[subtrials]
+                
+                n_trial_per_cue = train_a.shape[0]
 
+                # Cross validation
+                performance_temp = []
+                performance_chance_temp = []      
                 if np.isnan(subsampling):
                     cell_idx = np.arange(n_cells)
                 else:
@@ -789,7 +816,11 @@ def do_time_resolved_decoding(
 
                     traindata = np.vstack((cs_a_train, cs_b_train))
                     trainlabel = np.array([0] * (n_trial_per_cue - 1) + [1] * (n_trial_per_cue - 1))
-                    testdata = np.vstack((test_a[itrial, cell_idx], test_b[itrial, cell_idx]))
+
+                    if traindata.shape[0] != len(trainlabel):
+                        raise ValueError("Mismatch between traindata rows and trainlabel length")
+                    
+                    testdata = np.vstack((train_a[itrial, cell_idx], train_b[itrial, cell_idx]))
 
                     clf.fit(traindata, trainlabel)
                     testlabel = clf.predict(testdata)
@@ -809,6 +840,151 @@ def do_time_resolved_decoding(
             # scores, chance_scores = decode_within(sliced_patterns, labels, n_loops=5)  
             # accuracy.append(np.mean(scores))
             # chance_results.append(np.mean(chance_scores))
+
+    return np.array(accuracy), np.array(accuracy_chance)
+
+
+def do_time_window_decoding(
+    decoded_animals,
+    animal_list,
+    time_window,  # e.g. [7, 8, 9]
+    decoding_pair,
+    total_bins_length,
+    subtrials='all',
+    niteration=5,
+    clf=LinearSVC(),
+    clf_chance=LinearSVC(),
+    subsampling=np.nan,
+    seed=42,
+    testing_pair=None
+):
+    """
+    Perform time-window decoding with leave-one-trial-out cross-validation.
+
+    Args:
+        decoded_animals (dict): Output from `get_decoded_animals`, per animal.
+        animal_list (list): List of animals to decode.
+        time_window (list): Time bin indices to use (e.g., [7, 8, 9]).
+        decoding_pair (tuple): Training CS labels (e.g., ("CS1", "CS3")).
+        total_bins_length (int): Number of bins per cell.
+        subtrials (str/list): Which trials to use for training.
+        niteration (int): Iterations for subsampling.
+        clf (sklearn classifier): Main classifier.
+        clf_chance (sklearn classifier): Chance classifier.
+        subsampling (float or np.nan): Proportion of cells to sample.
+        seed (int): Random seed.
+        testing_pair (tuple or None): If different from training pair.
+
+    Returns:
+        accuracy (np.ndarray): Shape (n_animals,)
+        accuracy_chance (np.ndarray): Shape (n_animals,)
+    """
+    accuracy = []
+    accuracy_chance = []
+
+    for ia, animal in enumerate(animal_list):
+        d = decoded_animals[animal]
+        data = d["data"]
+        local_cell_indices = d["local_cell_indices"]
+        n_cells = d["n_cells"]
+        n_trial_per_cue = d["n_trial_per_cue"]
+
+        # Build time indices for all cells across time_window
+        time_indices = np.concatenate([
+            local_cell_indices * total_bins_length + t for t in time_window
+        ])
+
+        cue_map = {
+            "CS1": data[0:n_trial_per_cue, :][:, time_indices],
+            "CS2": data[n_trial_per_cue: 2 * n_trial_per_cue, :][:, time_indices],
+            "CS3": data[2 * n_trial_per_cue: 3 * n_trial_per_cue, :][:, time_indices],
+        }
+
+        # Assign training and testing cues
+        train_a = cue_map[decoding_pair[0]]
+        train_b = cue_map[decoding_pair[1]]
+
+        if testing_pair is None:
+            test_a = train_a
+            test_b = train_b
+        else:
+            test_a = cue_map[testing_pair[0]]
+            test_b = cue_map[testing_pair[1]]
+
+        # Subset of trials to decode
+        if subtrials == 'first10':
+            train_a = train_a[:10]
+            train_b = train_b[:10]
+        elif subtrials == 'last10':
+            train_a = train_a[-10:]
+            train_b = train_b[-10:]
+        elif isinstance(subtrials, (list, np.ndarray)):
+            train_a = train_a[subtrials]
+            train_b = train_b[subtrials]
+        elif subtrials == 'all' or subtrials is None:
+            pass  # use all trials
+        else:
+            raise ValueError(f"Invalid subtrials value: {subtrials}")
+
+        n_train_trials = train_a.shape[0]
+        n_test_trials = min(test_a.shape[0], test_b.shape[0])
+
+        performance = []
+        performance_chance = []
+
+        for iiter in range(niteration):
+            if np.isnan(subsampling):
+                cell_idx = np.arange(n_cells)
+            else:
+                n_sub = int(n_cells * subsampling)
+                cell_idx = np.random.choice(n_cells, n_sub, replace=False)
+
+            # Adjust time indices to match selected cells
+            selected_time_indices = np.concatenate([
+                local_cell_indices[cell_idx] * total_bins_length + t for t in time_window
+            ])
+
+            n_time_bins = len(time_window)
+            feature_idx = np.concatenate([cell_idx * n_time_bins + i for i in range(n_time_bins)])
+
+            train_a_feat = train_a[:, feature_idx]
+            train_b_feat = train_b[:, feature_idx]
+            test_a_feat = test_a[:, feature_idx]
+            test_b_feat = test_b[:, feature_idx]
+
+            performance_temp = []
+            performance_chance_temp = []
+
+            np.random.seed(seed + iiter)
+
+            for itrial in range(n_test_trials):
+                if itrial < n_train_trials:
+                    cs_a_train = np.delete(train_a_feat, itrial, axis=0)
+                    cs_b_train = np.delete(train_b_feat, itrial, axis=0)
+                else:
+                    cs_a_train = train_a_feat
+                    cs_b_train = train_b_feat
+
+                traindata = np.vstack((cs_a_train, cs_b_train))
+                trainlabel = np.array([0] * cs_a_train.shape[0] + [1] * cs_b_train.shape[0])
+
+                testdata = np.vstack((test_a_feat[itrial, :], test_b_feat[itrial, :]))
+                testlabel_true = np.array([0, 1])
+
+                clf.fit(traindata, trainlabel)
+                testlabel = clf.predict(testdata)
+                performance_temp.append(testlabel == testlabel_true)
+
+                shufflelabel = np.random.permutation(trainlabel)
+                clf_chance.fit(traindata, shufflelabel)
+                testlabel_chance = clf_chance.predict(testdata)
+                performance_chance_temp.append(testlabel_chance == testlabel_true)
+
+            performance.append(np.mean(np.concatenate(performance_temp)))
+            performance_chance.append(np.mean(np.concatenate(performance_chance_temp)))
+
+        accuracy.append(np.mean(performance))
+        accuracy_chance.append(np.mean(performance_chance))
 
     return np.array(accuracy), np.array(accuracy_chance)
 

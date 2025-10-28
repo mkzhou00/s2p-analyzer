@@ -239,7 +239,7 @@ class DataLoader:
             return self.voltages
 
 
-def load_population_data(animal_list, data_dir, result_dir, trial_types, target_frames, window_size, subtrials=None):
+def load_population_data(animal_list, day_list, data_dir, result_dir, target_frames, pre_cue_window, framerate, subtrials=None):
     
     pop_path = os.path.join(result_dir, "populationdata.npy")
     id_path = os.path.join(result_dir, "animal_id.npy")
@@ -251,10 +251,10 @@ def load_population_data(animal_list, data_dir, result_dir, trial_types, target_
         populationdata_list = []
         animal_id = []
                     
-        for animal in animal_list:
+        for a, animal in enumerate(animal_list):
             
-            file_dir = os.path.join(data_dir, animal, "files", "F_around_cue_raw.npy")
-            rawdata = np.load(file_dir, allow_pickle=True)  # shape: (trials, cells, frames)
+            file_dir = os.path.join(data_dir, animal, "d"+str(day_list[a]), "files", "F_around_cue_raw.npy")
+            rawdata = np.load(file_dir, allow_pickle=True)  # shape: (trial_types, ntrials, ncells, nframes)
             
             if subtrials is None or subtrials =='all':
                 subtrials_to_use = slice(None)
@@ -266,10 +266,21 @@ def load_population_data(animal_list, data_dir, result_dir, trial_types, target_
                 subtrials_to_use = subtrials
             else:
                 raise ValueError(f"Invalid subtrials value: {subtrials}")    
-                    
-            subset_ave = rawdata[:, subtrials_to_use, :, :].mean(axis=1)
-            tempdata = subset_ave.transpose(1, 0, 2).reshape(subset_ave.shape[1], -1)
+            
+            subset_raw = rawdata[:, subtrials_to_use, :, :]
+            
+            # Baseline subtraction before averaging
+            # baseline = np.mean(subset_raw[:, :, :, 0:int(pre_cue_window * framerate)], axis=3, keepdims=True)
+            # subset_baseline_subtract = subset_raw - baseline                
 
+            # Average across trials within each trial type
+            subset_ave = np.mean(subset_raw, axis=1)  # shape: (trial_types, ncells, nframes)
+            
+            # Baseline subtraction after averaging
+            baseline = np.mean(subset_ave[:, :, 0:pre_cue_window *framerate], axis=2, keepdims=True)
+            subset_ave = subset_ave - baseline  # baseline subtraction  
+            
+            tempdata = subset_ave.transpose(1, 0, 2).reshape(subset_ave.shape[1], -1) # reshape into (ncells, trial_types*nframes)
             ncells, nframes = tempdata.shape
             
             if nframes < target_frames:
@@ -278,17 +289,17 @@ def load_population_data(animal_list, data_dir, result_dir, trial_types, target_
             elif nframes > target_frames:
                 tempdata = tempdata[:, :target_frames]
             
-            # Perform baseline subtraction of the 3s pre CS period
-            baseline_window = 15 # 3s for 5hz
-            for i in range(len(trial_types)):
-                start = i * window_size
-                end = start + window_size
-                baseline = np.mean(tempdata[:,  start:start + baseline_window], axis=1, keepdims=True)
-                tempdata[:, start:end] -= baseline
+            # # Perform baseline subtraction of the 3s pre CS period
+            # baseline_window = int(pre_cue_window * framerate)
+            # for i in range(len(trial_types)):
+            #     start = i * window_size
+            #     end = start + window_size
+            #     baseline = np.mean(tempdata[:,  start:start + baseline_window], axis=1, keepdims=True)
+            #     tempdata[:, start:end] -= baseline
             populationdata_list.append(tempdata)
             animal_id.extend([animal] * ncells) # track neuron to specific animal
             
-        populationdata  = np.vstack(populationdata_list)
+        populationdata  = np.vstack(populationdata_list) # shape: (total_ncells, trial_types*window_size)
         animal_id = np.array(animal_id)
         np.save(pop_path, populationdata)
         np.save(id_path, animal_id)

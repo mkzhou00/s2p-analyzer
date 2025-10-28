@@ -14,6 +14,7 @@ from sklearn.manifold import TSNE
 sns.set_style("ticks")
 import matplotlib as mpl
 import scipy.stats as stats
+from statsmodels.stats.multitest import multipletests
 
 mpl.rcParams["axes.titlesize"] = 12
 mpl.rcParams["axes.labelsize"] = 10
@@ -586,12 +587,12 @@ def plot_activity_clusters(
                     ]
                 ]
             )
-            if cluster == 0:
-                buffer = 0.01
-                ax.set_ylim([global_min - buffer, global_max + buffer])
-            else:
-                ax.set_yticks([])
-         
+            
+            buffer = 0.01
+            ax.set_ylim([global_min - buffer, global_max + buffer])
+            # for cluster in range(len(uniquelabels)):
+            #     axs[-1, cluster].set_ylim([global_min - buffer, global_max + buffer])
+            
             ax.legend(
                 bbox_to_anchor=(0.94, 0.22),
                 bbox_transform=fig_activity_cluster.transFigure,
@@ -685,7 +686,7 @@ def plot_cluster_pairs(transformed_data, uniquelabels, newlabels, num_retained_p
     return fig_cluster_pairs
 
 
-def plot_decoding_accuracy_across_time(accuracy, accuracy_chance):
+def plot_decoding_accuracy_across_time(accuracy, accuracy_chance, time_labels=None, correction='bonferroni', alpha=0.05):    
     
     # calculate mean and sem averaging animals
     mean_real = np.nanmean(accuracy, axis=0)
@@ -693,9 +694,13 @@ def plot_decoding_accuracy_across_time(accuracy, accuracy_chance):
     mean_chance = np.nanmean(accuracy_chance, axis=0)
     sem_chance = np.nanstd(accuracy_chance, axis=0) / np.sqrt(accuracy_chance.shape[0])
 
-    # do paired t-tests real vs chance at each timepoint
-    p_values = [stats.ttest_rel(accuracy[:, t], accuracy_chance[:, t]).pvalue for t in range(accuracy.shape[1])]
-    significance = ['*' if p < 0.05 else '' for p in p_values]    
+    # Paired t-test for each timepoint
+    p_values = np.array([stats.ttest_rel(accuracy[:, t], accuracy_chance[:, t], nan_policy='omit').pvalue
+                         for t in range(accuracy.shape[1])])
+
+    # Multiple comparisons correction
+    reject, corrected_pvals, _, _ = multipletests(p_values, alpha=alpha, method=correction)
+    significance = ['*' if r else '' for r in reject]   
 
     fig, ax = plt.subplots(figsize=(5, 3))
     x = np.arange(len(accuracy[0]))

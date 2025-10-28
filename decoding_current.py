@@ -66,106 +66,6 @@ from plot_utils import (
 logger = logging.getLogger(__name__)
 
 
-def do_time_window_decoding(
-    decoded_animals,
-    animal_list,
-    time_window,  # e.g. [7, 8, 9] for bins 7 to 9
-    decoding_pair,
-    total_bins_length,
-    niteration=100,
-    clf=LinearSVC(),
-    clf_chance=LinearSVC(),   
-    subsampling=np.nan,
-    seed=42
-):
-    """
-    Perform decoding using a list of time bins as a window (e.g., [7, 8, 9]) 
-    with leave-one-trial-out cross-validation.
-
-    Args:
-        decoded_animals (dict): Output from `get_decoded_animals`, per animal.
-        animal_list (list): List of animals to decode.
-        time_window (list): List of time bin indices to use for decoding.
-        decoding_pair (tuple): Trial types to decode (e.g., ("CS1", "CS3")).
-        total_bins_length (int): Number of bins per cell.
-        niteration (int): Number of iterations (for subsampling).
-        subsampling (float or np.nan): Proportion of cells to subsample.
-        clf (sklearn classifier): Main classifier.
-        clf_chance (sklearn classifier): For chance decoding.
-        seed (int): Random seed.
-
-    Returns:
-        accuracy (np.ndarray): Shape (n_animals,).
-        accuracy_chance (np.ndarray): Same shape, for shuffled labels.
-    """
-    accuracy = []
-    accuracy_chance = []
-
-    for ia, animal in enumerate(animal_list):
-        d = decoded_animals[animal]
-        data = d["data"]
-        local_cell_indices = d["local_cell_indices"]
-        n_cells = d["n_cells"]
-        n_trial_per_cue = d["n_trial_per_cue"]
-
-        # Combine multiple time bins into one feature vector per cell
-        time_indices = np.concatenate([
-            local_cell_indices * total_bins_length + t for t in time_window
-        ])
-
-        cue_map = {
-            "CS1": data[0:n_trial_per_cue, :][:, time_indices],
-            "CS2": data[n_trial_per_cue: 2 * n_trial_per_cue, :][:, time_indices],
-            "CS3": data[2 * n_trial_per_cue: 3 * n_trial_per_cue, :][:, time_indices],
-        }
-        cs_a = cue_map[decoding_pair[0]]
-        cs_b = cue_map[decoding_pair[1]]
-
-        performance = []
-        performance_chance = []
-
-        for iiter in range(niteration):
-            performance_temp = []
-            performance_chance_temp = []
-
-            if np.isnan(subsampling):
-                cell_idx = np.arange(n_cells)
-            else:
-                n_sub = int(n_cells * subsampling)
-                cell_idx = np.random.choice(n_cells, n_sub, replace=False)
-
-            # Each cell contributes len(time_window) features
-            feature_idx = np.concatenate([
-                cell_idx * len(time_window) + i for i in range(len(time_window))
-            ])
-
-            for itrial in range(n_trial_per_cue):
-                cs_a_train = np.delete(cs_a, itrial, axis=0)[:, feature_idx]
-                cs_b_train = np.delete(cs_b, itrial, axis=0)[:, feature_idx]
-
-                traindata = np.vstack((cs_a_train, cs_b_train))
-                trainlabel = np.array([0] * (n_trial_per_cue - 1) + [1] * (n_trial_per_cue - 1))
-                testdata = np.vstack((cs_a[itrial, feature_idx], cs_b[itrial, feature_idx]))
-
-                clf.fit(traindata, trainlabel)
-                testlabel = clf.predict(testdata)
-                performance_temp.append(testlabel == [0, 1])
-
-                np.random.seed(seed)
-                shufflelabel = np.random.permutation(trainlabel)
-                clf_chance.fit(traindata, shufflelabel)
-                testlabel = clf_chance.predict(testdata)
-                performance_chance_temp.append(testlabel == [0, 1])
-
-            performance.append(np.mean(np.concatenate(performance_temp)))
-            performance_chance.append(np.mean(np.concatenate(performance_chance_temp)))
-
-        accuracy.append(np.mean(performance))
-        accuracy_chance.append(np.mean(performance_chance))
-
-    return np.array(accuracy), np.array(accuracy_chance)
-
-
     
 """
 Start of the file here
@@ -299,9 +199,9 @@ clf = LinearSVC()
 # clf = SVC(kernel='rbf')
 # clf = RandomForestClassifier(n_estimators=100, random_state=seed)
 clf_chance = clf        
-decoding_pair = ("CS1", "CS2")
-testing_pair = decoding_pair
-# testing_pair = ("CS2", "CS3")
+decoding_pair = ("CS1", "CS3")
+# testing_pair = decoding_pair
+testing_pair = ("CS2", "CS3")
 
 # set time bins
 decoding_time_window = np.arange(0, 20)  # decoding time window
@@ -323,7 +223,7 @@ else:
 cluster_labels = np.load(os.path.join(result_dir, "clusterlabels.npy")) # each cell's cluster label
 populationdata = np.load(os.path.join(result_dir, "populationdata.npy"))
 animal_id = np.load(os.path.join(result_dir, "animal_id.npy")) # each cell's animal ID
-decode_by_cluster = False
+decode_by_cluster = True
 selected_clusters = np.arange(0, 9) # zero indexed, usually from 0 to 8
 
 for cluster in selected_clusters:
