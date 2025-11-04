@@ -39,7 +39,7 @@ def filter_neurons_by_session_count(
     session_cols : Optional[Sequence], optional
         List of session column names; defaults to all except the first column.
     absent_values : Optional[Iterable[Any]], optional
-        Iterable of values that indicate absence; defaults to [-1, "-1"].
+        Iterable of values that indicate absence; defaults to (-1, "-1").
     exact : bool, optional
         If True, filter for exact count; if False, filter for at least count. Default is True.
 
@@ -201,7 +201,7 @@ def get_neurons_present_in_all_sessions(
     session_cols : Optional[Sequence], optional
         List of session column names; defaults to all except the first column.
     absent_values : Optional[Iterable[Any]], optional
-        Iterable of values that indicate absence; defaults to [-1, "-1"].
+        Iterable of values that indicate absence; defaults to (-1, "-1").
 
     Returns
     -------
@@ -344,7 +344,8 @@ def align_neuron_data_across_sessions(
         np.nan
     )
     
-    neuron_ids = tracking_table.iloc[:, 0].tolist()
+    # Extract neuron IDs from first column
+    neuron_ids = tracking_table[tracking_table.columns[0]].tolist()
     
     # Fill in data for each session
     for session_idx, (session_col, session_data) in enumerate(
@@ -442,7 +443,7 @@ def get_session_overlap_matrix(
     session_cols : Optional[Sequence], optional
         List of session column names; defaults to all except the first column.
     absent_values : Optional[Iterable[Any]], optional
-        Values indicating neuron absence; defaults to [-1, "-1", NaN].
+        Values indicating neuron absence; defaults to (-1, "-1"). NaN values are always treated as absent.
 
     Returns
     -------
