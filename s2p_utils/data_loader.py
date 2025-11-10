@@ -243,7 +243,7 @@ def load_population_data(animal_list, day_list, data_dir, result_dir, target_fra
     
     pop_path = os.path.join(result_dir, "populationdata.npy")
     id_path = os.path.join(result_dir, "animal_id.npy")
-    
+        
     if os.path.exists(os.path.join(result_dir, "populationdata.npy")):
         return np.load(pop_path, allow_pickle=True), np.load(id_path, allow_pickle=True)
 
@@ -253,21 +253,45 @@ def load_population_data(animal_list, day_list, data_dir, result_dir, target_fra
                     
         for a, animal in enumerate(animal_list):
             
-            file_dir = os.path.join(data_dir, animal, "d"+str(day_list[a]), "files", "F_around_cue_raw.npy")
-            rawdata = np.load(file_dir, allow_pickle=True)  # shape: (trial_types, ntrials, ncells, nframes)
+            total_cells = 0
+            print(animal)
+            file_dir = os.path.join(data_dir, animal, "d"+str(day_list[a]), "files")
+            rawdata = np.load(os.path.join(file_dir, "F_around_cue_raw.npy"), allow_pickle=True)  # shape: (trial_types, ntrials, ncells, nframes)
+            cells_idx = np.load(os.path.join(file_dir, "cell_idx.npy"), allow_pickle=True) # load cell index            
+            total_cells= sum(len(x) for x in cells_idx)
             
-            if subtrials is None or subtrials =='all':
-                subtrials_to_use = slice(None)
+            print(total_cells, " cells loaded from animal ", animal)
+            # Trials per cue and min across cues
+            n_trials = [len(rawdata[i]) for i in range(rawdata.shape[0])]
+            min_trials = np.min(n_trials)
+            rng = np.random.default_rng() 
+            
+            # Build per-cue indices based on subtrials
+            idxs_per_cue = []
+
+            if subtrials is None or subtrials == 'all':
+                # Use K = min trials; randomly pick K from larger cues
+                K = min_trials
+                for n in n_trials:
+                    if n == K:
+                        idx = np.arange(n, dtype=int)
+                    else:
+                        idx = rng.choice(n, size=K, replace=False)
+                        idx = np.sort(idx)  # keep original order of the chosen trials
+                    idxs_per_cue.append(idx)
+
             elif subtrials == 'first10':
-                subtrials_to_use = slice(0,10)
+                K = min(10, min_trials)
+                for n in n_trials:
+                    idxs_per_cue.append(np.arange(min(n, K), dtype=int))
+
             elif subtrials == 'last10':
-                subtrials_to_use = slice(-10, None)
-            elif isinstance(subtrials, (list, np.ndarray)):
-                subtrials_to_use = subtrials
-            else:
-                raise ValueError(f"Invalid subtrials value: {subtrials}")    
+                K = min(10, min_trials)
+                for n in n_trials:
+                    start = max(0, n - K)
+                    idxs_per_cue.append(np.arange(start, n, dtype=int))
             
-            subset_raw = rawdata[:, subtrials_to_use, :, :]
+            subset_raw = [np.take(a, idx, axis=0) for a, idx in zip(rawdata, idxs_per_cue)]
             
             # Baseline subtraction before averaging
             # baseline = np.mean(subset_raw[:, :, :, 0:int(pre_cue_window * framerate)], axis=3, keepdims=True)
@@ -282,6 +306,7 @@ def load_population_data(animal_list, day_list, data_dir, result_dir, target_fra
             
             tempdata = subset_ave.transpose(1, 0, 2).reshape(subset_ave.shape[1], -1) # reshape into (ncells, trial_types*nframes)
             ncells, nframes = tempdata.shape
+            assert(ncells == total_cells)
             
             if nframes < target_frames:
                 pad_width = target_frames - nframes

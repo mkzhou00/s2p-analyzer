@@ -248,6 +248,7 @@ def get_cell_only_activity(F: list, Fneu: list, spks:list, is_cell: list, num_pl
     F_cell = [[] for _ in range(num_planes)]
     Fneu_cell = [[] for _ in range(num_planes)]
     spks_cell = [[] for _ in range(num_planes)]
+    passed_idx_by_plane = [[] for _ in range(num_planes)]
 
     for ip in range(num_planes):
         cell_idx = [index for index, value in enumerate(is_cell[ip]) if value[0] == 1]
@@ -258,8 +259,9 @@ def get_cell_only_activity(F: list, Fneu: list, spks:list, is_cell: list, num_pl
                 F_cell[ip].append(F[ip][cell, :])
                 Fneu_cell[ip].append(Fneu[ip][cell, :])
                 spks_cell[ip].append(spks[ip][cell,:])
+                passed_idx_by_plane[ip].append(cell)
 
-    return F_cell, Fneu_cell, spks_cell
+    return F_cell, Fneu_cell, spks_cell, passed_idx_by_plane
 
 
 def get_corrected_F(F_cell: list, Fneu_cell: list, num_planes: int, coeff: float):

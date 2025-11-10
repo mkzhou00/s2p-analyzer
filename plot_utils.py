@@ -588,8 +588,8 @@ def plot_activity_clusters(
                 ]
             )
             
-            buffer = 0.01
-            ax.set_ylim([global_min - buffer, global_max + buffer])
+            # buffer = 0.01
+            # ax.set_ylim([global_min - buffer, global_max + buffer])
             # for cluster in range(len(uniquelabels)):
             #     axs[-1, cluster].set_ylim([global_min - buffer, global_max + buffer])
             
@@ -604,6 +604,12 @@ def plot_activity_clusters(
         axs[0, cluster].set_title(
             "Cluster %d\n(n=%d)" % (cluster + 1, numroisincluster[c])
         )
+    
+    # Set average cluster activitiy ylim all the same
+    buffer = 0.01
+    for ax in axs[-1, :]:
+        ax.set_ylim(global_min - buffer, global_max + buffer)
+        
     fig_activity_cluster.text(
         0.5,
         0.05,

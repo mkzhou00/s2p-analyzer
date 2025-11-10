@@ -99,10 +99,12 @@ neucoeff = 0.7
 main_folder = "Z:\\2p\\experiment1"
 
 # Animal specific parameters
-animal = "MZ_CA1_WD_F3"
-days = [2]
-num_planes_list = np.ones(12, dtype=int)*4
+animal = "MZ_CA1_WD_JB_55"
+days = [1, 7, 12]
+num_planes_list = np.ones(12, dtype=int)
 num_flyback_list = np.ones(12, dtype=int)*0
+# num_planes_list = [4, 3, 3]
+# num_flyback_list = [0, 3, 3]
 
 if animal == "MZ_CA1_WD_F3":
     imaging_system = "Bruker"
@@ -138,11 +140,11 @@ for id, day in enumerate(days):
 
         ## Preprocessing steps:
         # Remove overlapping cells across planes
-        if num_planes > 1:
-            overlapping_cells = correct_overlapping_cells_across_planes(stat, is_cell, num_planes)
+        # if num_planes > 1:
+        #     overlapping_cells = correct_overlapping_cells_across_planes(stat, is_cell, num_planes)
 
-        # Get F_cell and Fneu_cell only activity
-        F_cell, Fneu_cell, spks_cell = get_cell_only_activity(F, Fneu, spks, is_cell, num_planes)
+        # Get F_cell and Fneu_cell only activity, return the indices of cells per plane
+        F_cell, Fneu_cell, spks_cell, cell_idx = get_cell_only_activity(F, Fneu, spks, is_cell, num_planes)
 
         # Get neuropil corrected F with neuropil coefficient
         assert len(F_cell) == len(
@@ -151,9 +153,12 @@ for id, day in enumerate(days):
         Fcorr = get_corrected_F(F_cell, Fneu_cell, num_planes, neucoeff)
         for ip in range(num_planes):
             assert len(F_cell[ip]) == len(Fcorr[ip])
+            assert len(Fcorr[ip]) == len(cell_idx[ip])
 
         F_to_save = os.path.join(data_dir, "files", "F.npy")
         np.save(F_to_save, Fcorr)
+        cell_idx_to_save = os.path.join(data_dir, "files", "cell_idx.npy")
+        np.save(cell_idx_to_save, cell_idx)
         # S_to_save = os.path.join(data_dir, "files", "spks.npy")
         # np.save(S_to_save, spks_cell)
 
@@ -187,28 +192,29 @@ for id, day in enumerate(days):
     # # Extract all event time points from new event_df
     [licks, CS1, CS2, CS3, sucrose, umami] = extract_events(event_df)
     allCS = filter_trials_by_minITI([CS1, CS2, CS3], post_cue_window)
+    # allCS = [CS1, CS2, CS3]
 
     ## ----------------------------------------------------------------------------
     # Downsample Fcorr to 5hz if not already
-    if os.path.exists(os.path.join(file_dir, "F_5hz.npy")) and os.path.exists(os.path.join(file_dir, "timestamps_5hz.npy")):
-        Fcorr_5hz = np.load(os.path.join(file_dir, "F_5hz.npy"), allow_pickle=True)
-        new_im_ts = np.load(os.path.join(file_dir,  "timestamps_5hz.npy"), allow_pickle=True)
+    # if os.path.exists(os.path.join(file_dir, "F_5hz.npy")) and os.path.exists(os.path.join(file_dir, "timestamps_5hz.npy")):
+    #     Fcorr_5hz = np.load(os.path.join(file_dir, "F_5hz.npy"), allow_pickle=True)
+    #     new_im_ts = np.load(os.path.join(file_dir,  "timestamps_5hz.npy"), allow_pickle=True)
+    # else:
+    current_framerate = np.round(1 / ((im_ts[0][-1] - im_ts[0][0]) / len(im_ts[0]))).astype(
+        int)
+    if current_framerate != framerate:
+        Fcorr_5hz, new_im_ts = downsample_data(Fcorr, im_ts, current_framerate, framerate)
+        F_to_save = os.path.join(data_dir, "files", "F_5hz.npy")
+        np.save(F_to_save, Fcorr_5hz)
+        ts_to_save = os.path.join(data_dir, "files", "timestamps_5hz.npy") 
+        np.save(ts_to_save, new_im_ts)    
     else:
-        current_framerate = np.round(1 / ((im_ts[0][-1] - im_ts[0][0]) / len(im_ts[0]))).astype(
-            int)
-        if current_framerate != framerate:
-            Fcorr_5hz, new_im_ts = downsample_data(Fcorr, im_ts, current_framerate, framerate)
-            F_to_save = os.path.join(data_dir, "files", "F_5hz.npy")
-            np.save(F_to_save, Fcorr_5hz)
-            ts_to_save = os.path.join(data_dir, "files", "timestamps_5hz.npy") 
-            np.save(ts_to_save, new_im_ts)    
-        else:
-            Fcorr_5hz = Fcorr
-            new_im_ts = im_ts
-            F_to_save = os.path.join(data_dir, "files", "F_5hz.npy")
-            np.save(F_to_save, Fcorr_5hz)
-            ts_to_save = os.path.join(data_dir, "files", "timestamps_5hz.npy") 
-            np.save(ts_to_save, new_im_ts)    
+        Fcorr_5hz = Fcorr
+        new_im_ts = im_ts
+        F_to_save = os.path.join(data_dir, "files", "F_5hz.npy")
+        np.save(F_to_save, Fcorr_5hz)
+        ts_to_save = os.path.join(data_dir, "files", "timestamps_5hz.npy") 
+        np.save(ts_to_save, new_im_ts)    
     
 
     ## ----------------------------------------------------------------------------
@@ -232,54 +238,54 @@ for id, day in enumerate(days):
     np.save(file_to_save, F_around_cue)  
 
 
-    ## ----------------------------------------------------------------------------
-    ## Plotting
-    # behavior raster
-    fig_rawplot = plot_raw_licks(allCS, licks, pre_cue_window, 10)
-    plt.close(fig_rawplot)
-    fig_rawplot.savefig(
-        os.path.join(result_dir, "behavior_raster.png"), format="png"
-    )
+    # ## ----------------------------------------------------------------------------
+    # ## Plotting
+    # # behavior raster
+    # fig_rawplot = plot_raw_licks(allCS, licks, pre_cue_window, 10)
+    # plt.close(fig_rawplot)
+    # fig_rawplot.savefig(
+    #     os.path.join(result_dir, "behavior_raster.png"), format="png"
+    # )
     
 
-    # For plotting average PSTH around cue
-    Fave_around_cue = extract_Fave_around_events(
-        allCS,
-        Fcorr_norm,
-        new_im_ts,
-        num_planes,
-        pre_cue_window,
-        post_cue_window,
-    )
-    # reshaping the data, output is nCell x nCS*nFrames
-    n_cs, n_cells, n_time = Fave_around_cue.shape
-    Fave_around_cue = Fave_around_cue.transpose(1, 0, 2).reshape(n_cells, n_cs * n_time)
+    # # For plotting average PSTH around cue
+    # Fave_around_cue = extract_Fave_around_events(
+    #     allCS,
+    #     Fcorr_norm,
+    #     new_im_ts,
+    #     num_planes,
+    #     pre_cue_window,
+    #     post_cue_window,
+    # )
+    # # reshaping the data, output is nCell x nCS*nFrames
+    # n_cs, n_cells, n_time = Fave_around_cue.shape
+    # Fave_around_cue = Fave_around_cue.transpose(1, 0, 2).reshape(n_cells, n_cs * n_time)
 
-    # Initialize parameters
-    window_size = int(
-        Fave_around_cue.shape[1] / len(trial_types)
-    ) 
-    framerate = np.round(1 / ((new_im_ts[0][-1] - new_im_ts[0][0]) / len(new_im_ts[0]))).astype(
-            int)
-    frames_to_reward = delay_to_reward * framerate
-    pre_window_size = pre_cue_window * framerate
-    sortwindow = [
-        pre_window_size,
-        pre_window_size + frames_to_reward,
-    ]
+    # # Initialize parameters
+    # window_size = int(
+    #     Fave_around_cue.shape[1] / len(trial_types)
+    # ) 
+    # framerate = np.round(1 / ((new_im_ts[0][-1] - new_im_ts[0][0]) / len(new_im_ts[0]))).astype(
+    #         int)
+    # frames_to_reward = delay_to_reward * framerate
+    # pre_window_size = pre_cue_window * framerate
+    # sortwindow = [
+    #     pre_window_size,
+    #     pre_window_size + frames_to_reward,
+    # ]
     
-    # # Plot PSTH
-    fig_calcium_PSTH = plot_average_PSTH_around_interest_window(
-        trial_types,
-        Fave_around_cue,
-        window_size,
-        pre_window_size,
-        frames_to_reward,
-        sortwindow,
-        framerate,
-    )
-    fig_calcium_PSTH.savefig(os.path.join(result_dir, "PSTH.png"), format="png")
-    plt.close(fig_calcium_PSTH)
+    # # # Plot PSTH
+    # fig_calcium_PSTH = plot_average_PSTH_around_interest_window(
+    #     trial_types,
+    #     Fave_around_cue,
+    #     window_size,
+    #     pre_window_size,
+    #     frames_to_reward,
+    #     sortwindow,
+    #     framerate,
+    # )
+    # fig_calcium_PSTH.savefig(os.path.join(result_dir, "PSTH.png"), format="png")
+    # plt.close(fig_calcium_PSTH)
 
     # # Get the example cells based on sorted response, plot PSTH
     # example_cells = []

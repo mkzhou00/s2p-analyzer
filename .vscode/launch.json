@@ -13,7 +13,7 @@
             // "console": "internalConsole",
             "justMyCode": false,
             "env": {
-                "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "5.0"
+                "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "8.0"
             }
             // "python.termina..intergrated.inheritEnv": false,
             // "python.terminal.activateEnvironment": false,

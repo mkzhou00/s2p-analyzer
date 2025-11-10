@@ -87,7 +87,7 @@ neucoeff = 0.7
 framerate = 5
 target_frames = 300 # Should be the total time window * framerate * nCS, so 300 for the current settings
 trial_types = ["CS1+", "CS2+", "CS3-"]
-learning_stage = 'early'
+learning_stage = 'late'
 
 
 # Set animals and days for early and late learning
@@ -125,7 +125,7 @@ elif learning_stage == "late":
     result_dir = "Z:\\2p\\experiment1\\population_data\\late learning\\"
     animal_list = [
         "MZ_CA1_WD_F3",
-        "MZ_CA1_WD_M4",
+        # "MZ_CA1_WD_M4",
         "MZ_CA1_WD_M5",
         "MZ_CA1_WD_M6",
         "MZ_CA1_WD_M7",
@@ -133,7 +133,7 @@ elif learning_stage == "late":
         "MZ_CA1_WD_JB_54",
         "MZ_CA1_WD_JB_55"
     ]   
-    day_list = [7, 5, 6, 6, 6, 6, 8, 12]
+    day_list = [7, 6, 5, 6, 6, 8, 12]
     subtrials = 'all'
     
     
@@ -143,14 +143,14 @@ frames_to_reward = delay_to_reward * framerate
 pre_window_size = pre_cue_window * framerate
         
 # Load and concatenate population data across animals
-populationdata, animal_id = load_population_data(animal_list, day_list, data_dir, result_dir, trial_types, target_frames, window_size, pre_cue_window, framerate, subtrials=subtrials)
+populationdata, animal_id = load_population_data(animal_list, day_list, data_dir, result_dir, target_frames, pre_cue_window, framerate, subtrials=subtrials)
 # optional 
 cs1_data = populationdata[:, :window_size]
 cs2_data = populationdata[:, window_size:2*window_size]
 cs3_data = populationdata[:, 2*window_size:]
 
-train_data = np.hstack([cs1_data, cs3_data])
-trial_types = ['CS1+', 'CS3-']
+train_data = populationdata
+trial_types = ['CS1+', 'CS2+', 'CS3-']
 
 # Define cache file paths before running PCA
 pca_path = os.path.join(result_dir, "pca_model.pickle")
