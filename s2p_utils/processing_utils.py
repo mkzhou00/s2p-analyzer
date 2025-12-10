@@ -1,5 +1,7 @@
 import pandas as pd
 import numpy as np
+import os
+import re
 import scipy.stats as stats
 from scipy.interpolate import interp1d
 from sklearn.svm import SVC, SVR, LinearSVC
@@ -539,34 +541,43 @@ def reorder_clusters(populationdata, pre_window_size, rawlabels):
     return outputlabels
 
 
-def downsample_data(F, im_ts, current_rate, target_rate, binning_tolerance=0.2):
+def resample_data(F, im_ts, current_rate, target_rate, binning_tolerance=0.2):
    
-    F_downsampled = []
-    im_ts_downsampled = []
+    F_resampled = []
+    im_ts_resampled = []
     
     for ip, F_plane in enumerate(F):
         n_cells, n_timepoints = np.array(F_plane).shape
-
+        t_orig = np.array(im_ts[ip])
+        if len(t_orig) != n_timepoints:
+            raise ValueError(f"Plane {ip}: length of im_ts does not match number of timepoints")
+  
         ratio = current_rate / target_rate
         use_binning = np.isclose(ratio, round(ratio), atol=binning_tolerance)
 
         # If the current rate can be evenly divided by the target framerate or that its close to the integer with margin of 0.2, use binning
         # to average the values to the first point 
-        if np.remainder(current_rate, target_rate) == 0:
-            
+        # if np.remainder(current_rate, target_rate) == 0:
+        if (target_rate < current_rate) and np.isclose(ratio, round(ratio), atol=binning_tolerance):    
             bin_size = int(round(ratio))
             n_bins = n_timepoints // bin_size
-            t_orig = im_ts[ip][:n_bins * bin_size]
-            t_new = t_orig[::bin_size]
-
-            F_down = np.zeros((n_cells, n_bins))
+            if n_bins < 1:
+                use_binning = False
+            else:
+                t_trunc = t_orig[ip][:n_bins * bin_size]
+                t_new = t_trunc[::bin_size]
+                F_down = np.zeros((n_cells, n_bins))
             
-            for i in range(n_cells):
-                f_trunc = F_plane[i][:n_bins * bin_size]
-                binned = f_trunc.reshape(n_bins, bin_size)
-                f_down = np.nanmean(binned, axis=1)           # shape: (n_bins,)
-                F_down[i] = np.round(f_down, 5)
-            
+                for i in range(n_cells):
+                    f_trunc = F_plane[i][:n_bins * bin_size]
+                    binned = f_trunc.reshape(n_bins, bin_size)
+                    f_down = np.nanmean(binned, axis=1)           # shape: (n_bins,)
+                    F_down[i] = np.round(f_down, 5)
+                
+                im_ts_resampled.append(t_new)
+                F_resampled.append(F_down)
+                continue # skip to next plane
+         
             # bin_size = int(np.divide(current_rate, target_rate))
             
             # # only include the first time point in each bin
@@ -583,23 +594,52 @@ def downsample_data(F, im_ts, current_rate, target_rate, binning_tolerance=0.2):
             #     F_down[i] = np.round(f_down, 5)
         
         # if the current rate is not divided evenly or close to integer divide, interpolate time points to fit the target framerate
-        else:
-            t_orig = im_ts[ip]
-            duration = t_orig[-1] - t_orig[0]            
-            new_n_timepoints = int(duration * target_rate)
-            t_new = np.linspace(t_orig[0], t_orig[-1], new_n_timepoints)
+        # else:
+        #     t_orig = im_ts[ip]
+        #     duration = t_orig[-1] - t_orig[0]            
+        #     new_n_timepoints = int(duration * target_rate)
+        #     t_new = np.linspace(t_orig[0], t_orig[-1], new_n_timepoints)
             
-            F_down = np.zeros((n_cells, new_n_timepoints))
+        #     F_down = np.zeros((n_cells, new_n_timepoints))
 
-            for i in range(n_cells):
-                f_interp = interp1d(t_orig, F_plane[i], kind='linear')
-                f_interped = f_interp(t_new)
-                F_down[i] = np.round(f_interped, 5)
+        #     for i in range(n_cells):
+        #         f_interp = interp1d(t_orig, F_plane[i], kind='linear')
+        #         f_interped = f_interp(t_new)
+        #         F_down[i] = np.round(f_interped, 5)
         
-        im_ts_downsampled.append(t_new)
-        F_downsampled.append(F_down)
+        # im_ts_resampled.append(t_new)
+        # F_resampled.append(F_down)
+        duration = t_orig[-1] - t_orig[0]        
+        new_n_timepoints = int(np.round(duration * target_rate))
+        # if new_n_timepoints < 2:
+        #     new_n_timepoints = 2
+        t_new = np.linspace(t_orig[0], t_orig[-1], new_n_timepoints)
+        F_down = np.zeros((n_cells, new_n_timepoints))
 
-    return F_downsampled, im_ts_downsampled
+        for i in range(n_cells):
+            # interp1d fails if there are NaNs in the input trace. A minimal strategy: do a simple
+            # linear fill of NaNs before interpolation. If all NaNs, keep them.
+            trace = F_plane[i].astype(float)
+            if np.any(np.isnan(trace)):
+                valid = ~np.isnan(trace)
+                # If NaNs only at edges, fill with nearest valid value by specifying fill_value
+                f_fill = interp1d(t_orig[valid], trace[valid], kind='linear',
+                                  bounds_error=False,
+                                  fill_value=(trace[valid][0], trace[valid][-1]))
+                trace_filled = f_fill(t_orig)
+            else:
+                trace_filled = trace
+
+            f_interp = interp1d(t_orig, trace_filled, kind='linear',
+                                bounds_error=False,
+                                fill_value=(trace_filled[0], trace_filled[-1]))
+            f_interped = f_interp(t_new)
+            F_down[i] = np.round(f_interped, 5)
+
+        im_ts_resampled.append(t_new)
+        F_resampled.append(F_down)
+
+    return F_resampled, im_ts_resampled
 
 
 def filter_trials_by_minITI(cs_events, min_ITI):
@@ -1054,3 +1094,247 @@ def get_initial_cluster_labels(X, clustering_model, n_clusters, n_neighbors=None
         raise ValueError(f"Unsupported clustering model: {clustering_model}")
 
     return labels
+
+
+
+def get_filtered_rois_per_animal_plane(animal_list, day_list, data_dir, oldlabels, target_day_list, skip_if_missing_plane_day=None):
+    """
+    Returns
+    -------
+    filtered_rois_per_animal_plane : dict
+        Format:
+            {
+                animal1: {plane0: [roi_idx0, ...], plane1: [...] ...},
+                animal2: {plane0: [...], ...},
+                ...
+            }
+        Each list contains cell indices (0-based within each plane) ON DAY 1, which also have matches on the trained day
+    """
+    filtered_rois_per_animal_plane = {}
+    newlabels_flag = {}
+    
+    if target_day_list is None:
+        per_animal_req_day = None # use all days per animal
+    else:
+        per_animal_req_day = target_day_list
+    
+    for a, (day, animal) in enumerate(zip(day_list, animal_list)):
+        top_animal_dir = os.path.join(data_dir, animal)
+        main_dir = os.path.join(top_animal_dir, f"d{day}")
+        file_dir = os.path.join(main_dir, "files")
+        
+        print(animal)
+        # Load cell index for this trained day
+        cells_idx = np.load(os.path.join(file_dir, "cell_idx.npy"), allow_pickle=True)
+        num_planes = len(cells_idx)
+        
+        
+        # Plane offsets for global indexing
+        plane_offsets_for_global_idx = np.cumsum([0] + [len(x) for x in cells_idx[:-1]])
+        filtered_rois_per_animal_plane[animal] = {}
+        newlabels_flag[animal] = {}
+        
+        trained_day_col = str(day-1)
+        
+        for ip in range(num_planes):
+            # Load ROI table for each animal and the day columns 
+            ROI_table_across_sessions = pd.read_csv(os.path.join(top_animal_dir, f"ROI_table_full_plane{ip}.csv"))
+            all_day_cols = [col for col in ROI_table_across_sessions.columns if re.match(r'^\d+$', str(col).strip())]
+
+            # Find the rows where the trained day column matches the current plane's cell indices for all the target sessions
+            matched_rows_on_trained_day = ROI_table_across_sessions[ROI_table_across_sessions[trained_day_col].isin(cells_idx[ip])]
+            matched_rows_on_trained_day = matched_rows_on_trained_day.sort_values(by=trained_day_col)
+            newlabels_flag[animal][ip] = np.full(len(matched_rows_on_trained_day), fill_value=-1)  # Initialize with -1
+            
+            # Skip the plane if data is missing for some days
+            if skip_if_missing_plane_day and animal in skip_if_missing_plane_day:
+                plane_to_skip = skip_if_missing_plane_day[animal]
+                if plane_to_skip == ip:
+                    print(f"Skipping animal {animal}, plane {ip}")
+                    filtered_rois_per_animal_plane[animal][ip] = []
+                    continue
+                
+            # correct for 0-based indexing
+            if per_animal_req_day[a] is None:
+                required_day_cols = all_day_cols
+            else:
+                required_day_cols = [str(d-1) for d in per_animal_req_day[a] if str(d) in all_day_cols]
+            
+            
+            # Get the ROIs that also have matches on target day thats not -1 (both int or str)
+            all_valid_mask = (matched_rows_on_trained_day[required_day_cols].astype(str) != '-1').all(axis=1)
+            index_filtered_ROIs = np.flatnonzero(all_valid_mask.values).tolist()
+            filtered_ROIs = matched_rows_on_trained_day[all_valid_mask].copy()
+            
+            # Get the remaining cell indices on trained day based on the target days
+            remaining_cells = filtered_ROIs[trained_day_col].astype(int).values.tolist()
+            
+            # Get the new labels for these cells and sort by day 1 index
+            global_indices = [plane_offsets_for_global_idx[ip] + idx for idx in remaining_cells]
+            assert(len(global_indices) == len(filtered_ROIs)), "Length mismatch!"
+            
+            labels = np.asarray(oldlabels)[global_indices].tolist()
+            filtered_ROIs['labels'] = labels
+
+            # filtered_ROIs = filtered_ROIs.sort_values(by=trained_day_col)
+            
+            # # reorder labels accordingly and save as new labels
+            # reordered_labels = filtered_ROIs['labels'].values.tolist()
+            # newlabels_per_animal_plane.extend(labels)
+            
+            filtered_rois_per_animal_plane[animal][ip] = filtered_ROIs
+            for row, label in zip(index_filtered_ROIs, labels):
+                newlabels_flag[animal][ip][row] = label
+            
+            assert (len(filtered_rois_per_animal_plane[animal][ip]) == len(labels)), "Length mismatch!"
+            # Now filtered_rois_per_animal_plane[animal][ip] is the list of cell indices within plane ip for animal, present on day 1 and in ROI table
+
+    return filtered_rois_per_animal_plane, newlabels_flag
+
+
+def load_population_data_filtered(
+    animal_list, 
+    day_list, 
+    data_dir, 
+    result_dir, 
+    target_frames, 
+    pre_cue_window, 
+    framerate, 
+    filtered_rois_per_animal_plane,   # dict: animal -> plane -> day -> ROI list
+    subtrials=None
+):
+
+    populationdata_list = []
+    animal_id = []
+    foundcells_idx_full = []
+    foundcells_flags_full = []
+    new_labels_on_test_day = []  
+                   
+    for animal, day in zip(animal_list, day_list):
+
+        print(f"\n=== Loading {animal} (day {day}) ===")
+        file_dir = os.path.join(data_dir, animal, f"d{day}", "files")
+
+        # --- Load raw data ---
+        rawdata = np.load(os.path.join(file_dir, "F_around_cue_raw.npy"), allow_pickle=True)
+        cells_idx = np.load(os.path.join(file_dir, "cell_idx.npy"), allow_pickle=True)
+
+        # Concatenate mapping: plane0 cells, plane1 cells, ...
+        plane_offsets = np.cumsum([0] + [len(x) for x in cells_idx[:-1]])
+        cell_list_full = np.concatenate([np.asarray(x) for x in cells_idx])
+
+        total_cells = len(cell_list_full)
+        print(f"Total cells: {total_cells}")
+
+        foundcell_flags_per_animal = np.zeros(total_cells, dtype=int)
+
+        # --- Build trial subsets ---
+        n_trials = [len(rawdata[i]) for i in range(rawdata.shape[0])]
+        min_trials = min(n_trials)
+        rng = np.random.default_rng()
+
+        idxs_per_cue = []
+        if subtrials in (None, "all"):
+            K = min_trials
+            for n in n_trials:
+                if n == K:
+                    idxs_per_cue.append(np.arange(n))
+                else:
+                    idxs = np.sort(rng.choice(n, size=K, replace=False))
+                    idxs_per_cue.append(idxs)
+
+        elif subtrials == "first10":
+            K = min(10, min_trials)
+            for n in n_trials:
+                idxs_per_cue.append(np.arange(min(n, K)))
+
+        elif subtrials == "last10":
+            K = min(10, min_trials)
+            for n in n_trials:
+                start = max(0, n - K)
+                idxs_per_cue.append(np.arange(start, n))
+
+        # Subset & baseline
+        subset_raw = [np.take(a, idx, axis=0) for a, idx in zip(rawdata, idxs_per_cue)]
+        subset_ave = np.mean(subset_raw, axis=1)  # (trial_types, ncells, nframes)
+
+        baseline = np.mean(subset_ave[:, :, :int(pre_cue_window * framerate)], axis=2, keepdims=True)
+        subset_ave = subset_ave - baseline
+
+        # Rearrange to (ncells, trial_types, nframes)
+        subset_by_cell = subset_ave.transpose(1, 0, 2)
+
+        # --- Process each plane ---
+        roi_table_for_animal = filtered_rois_per_animal_plane[animal]
+
+        for ip, plane_roi_dict in roi_table_for_animal.items():
+
+            # skip nonexistent planes
+            if ip >= len(cells_idx):
+                continue
+
+            # extract ROIs for test day
+            if str(day-1) not in plane_roi_dict:
+                continue
+
+            ROI_on_test_day = plane_roi_dict[str(day-1)].astype(int)
+            labels_on_test_day = plane_roi_dict['labels'].astype(int)
+            if len(ROI_on_test_day) == 0:
+                continue
+
+            # local indices for this plane
+            cells_idx_this_plane = np.array(cells_idx[ip])
+
+            found_cells_local = []
+            found_flags = []
+
+            # match input ROIs to actual existing cell IDs
+            for cellnum in ROI_on_test_day:
+                match = np.where(cells_idx_this_plane == cellnum)[0]
+                found_flags.append(1 if match.size > 0 else 0)
+                if match.size > 0:
+                    found_cells_local.append(match[0])
+
+            found_cells_local = np.array(found_cells_local)
+            if found_cells_local.size == 0:
+                continue
+
+            # Map local → global using plane offsets
+            global_indices = plane_offsets[ip] + found_cells_local
+            foundcell_flags_per_animal[global_indices] = 1
+            
+            # collect cluster labels if the cell is found on this day
+            new_labels_on_test_day.extend(labels_on_test_day[np.array(found_flags) == 1])
+            
+            # Extract data: (n_cells, trial_types, nframes)
+            tempdata = subset_by_cell[global_indices]
+
+            # Flatten trialtypes × frames
+            n_cells = tempdata.shape[0]
+            tempdata = tempdata.reshape(n_cells, -1)
+
+            # Pad/crop to target_frames
+            if tempdata.shape[1] < target_frames:
+                pad = target_frames - tempdata.shape[1]
+                tempdata = np.pad(tempdata, ((0, 0), (0, pad)))
+            else:
+                tempdata = tempdata[:, :target_frames]
+
+            populationdata_list.append(tempdata)
+            animal_id.extend([animal] * len(global_indices))
+            foundcells_idx_full.extend(global_indices.tolist())
+            foundcells_flags_full.extend(found_flags)
+
+        # append flags for this animal
+        foundcells_flags_full.extend(foundcell_flags_per_animal.tolist())
+
+    # --- Final assembly ---
+    if populationdata_list:
+        populationdata = np.vstack(populationdata_list)
+        animal_id = np.array(animal_id)
+    else:
+        populationdata = np.zeros((0, target_frames))
+        animal_id = np.array([])
+    assert(len(populationdata) == len(new_labels_on_test_day)), "Length mismatch between population data and new labels!"
+
+    return populationdata, animal_id, foundcells_idx_full, foundcells_flags_full, new_labels_on_test_day

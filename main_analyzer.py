@@ -68,7 +68,7 @@ from s2p_utils.processing_utils import (
     normalize_signal,
     extract_Fave_around_events,
     reorder_clusters,
-    downsample_data,
+    resample_data,
     extract_F_around_events,
     filter_trials_by_minITI
 )
@@ -99,10 +99,10 @@ neucoeff = 0.7
 main_folder = "Z:\\2p\\experiment1"
 
 # Animal specific parameters
-animal = "MZ_CA1_WD_JB_55"
-days = [1, 7, 12]
-num_planes_list = np.ones(12, dtype=int)
-num_flyback_list = np.ones(12, dtype=int)*0
+animal = "MZ_CA1_WD_M5"
+days = [3]
+num_planes_list = np.ones(12, dtype=int)*3
+num_flyback_list = np.ones(12, dtype=int)*3
 # num_planes_list = [4, 3, 3]
 # num_flyback_list = [0, 3, 3]
 
@@ -154,7 +154,7 @@ for id, day in enumerate(days):
         for ip in range(num_planes):
             assert len(F_cell[ip]) == len(Fcorr[ip])
             assert len(Fcorr[ip]) == len(cell_idx[ip])
-
+        
         F_to_save = os.path.join(data_dir, "files", "F.npy")
         np.save(F_to_save, Fcorr)
         cell_idx_to_save = os.path.join(data_dir, "files", "cell_idx.npy")
@@ -196,18 +196,21 @@ for id, day in enumerate(days):
 
     ## ----------------------------------------------------------------------------
     # Downsample Fcorr to 5hz if not already
-    # if os.path.exists(os.path.join(file_dir, "F_5hz.npy")) and os.path.exists(os.path.join(file_dir, "timestamps_5hz.npy")):
-    #     Fcorr_5hz = np.load(os.path.join(file_dir, "F_5hz.npy"), allow_pickle=True)
-    #     new_im_ts = np.load(os.path.join(file_dir,  "timestamps_5hz.npy"), allow_pickle=True)
-    # else:
-    current_framerate = np.round(1 / ((im_ts[0][-1] - im_ts[0][0]) / len(im_ts[0]))).astype(
+    current_framerate = np.round(len(im_ts[0]) / (im_ts[0][-1] - im_ts[0][0])).astype(
         int)
     if current_framerate != framerate:
-        Fcorr_5hz, new_im_ts = downsample_data(Fcorr, im_ts, current_framerate, framerate)
+        Fcorr_5hz, new_im_ts = resample_data(Fcorr, im_ts, current_framerate, framerate)
         F_to_save = os.path.join(data_dir, "files", "F_5hz.npy")
         np.save(F_to_save, Fcorr_5hz)
         ts_to_save = os.path.join(data_dir, "files", "timestamps_5hz.npy") 
-        np.save(ts_to_save, new_im_ts)    
+        np.save(ts_to_save, new_im_ts)
+        # Plot original and resampled data to double check
+        fig_F_resampled, axs = plt.subplots(2, 1)
+        ratio = current_framerate / framerate
+        adjusted_x = int(10000/ratio)
+        axs[0].plot(im_ts[0][0:10000], Fcorr[0][0][0:10000], color='k', label="original")
+        axs[1].plot(new_im_ts[0][0:adjusted_x], Fcorr_5hz[0][0][0:adjusted_x], color='blue', label="5hz resampled")
+        fig_F_resampled.savefig(os.path.join(result_dir, "F_resampled_check.png"), format="png")
     else:
         Fcorr_5hz = Fcorr
         new_im_ts = im_ts
@@ -215,7 +218,6 @@ for id, day in enumerate(days):
         np.save(F_to_save, Fcorr_5hz)
         ts_to_save = os.path.join(data_dir, "files", "timestamps_5hz.npy") 
         np.save(ts_to_save, new_im_ts)    
-    
 
     ## ----------------------------------------------------------------------------
     # # Normalize signal

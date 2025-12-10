@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+import re
 import scipy.io as sio
 import seaborn as sns
 import pickle
@@ -48,23 +49,15 @@ from sklearn.svm import SVC, LinearSVC
 
 from s2p_utils.data_loader import load_population_data
 from s2p_utils.processing_utils import (
-    correct_overlapping_cells_across_planes,
-    correct_timestamps,
-    get_cell_only_activity,
-    extract_events,
-    get_corrected_F,
-    extract_interest_time_intervals,
-    extract_imaging_ts_around_events,
-    normalize_signal,
-    extract_Fave_around_events,
     reorder_clusters,
     build_knn,
-    get_initial_cluster_labels
+    get_initial_cluster_labels,
+    get_filtered_rois_per_animal_plane,
+    load_population_data_filtered
 )
 from plot_utils import (
-    plot_raw_licks,
-    plot_average_PSTH_around_interest_window,
-    plot_individual_cells_activity,
+    tsplot,
+    standardize_plot_graphics,
     plot_PC_screenplot,
     plot_PCs,
     make_silhouette_plot,
@@ -72,7 +65,6 @@ from plot_utils import (
     plot_cluster_pairs,
     plot_individual_trial_average_activity,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -94,8 +86,7 @@ learning_stage = 'late'
 if learning_stage == "early":
     result_dir = "Z:\\2p\\experiment1\\population_data\\early learning\\"
     animal_list = [
-        # "MZ_CA1_WD_F3",
-        # "MZ_CA1_WD_M4",
+        "MZ_CA1_WD_F3",
         "MZ_CA1_WD_M5",
         "MZ_CA1_WD_M6",
         "MZ_CA1_WD_M7",
@@ -103,14 +94,14 @@ if learning_stage == "early":
         "MZ_CA1_WD_JB_54",
         "MZ_CA1_WD_JB_55"
     ]
-    day_list = np.ones(8, dtype=int)
+    day_list = np.ones(7, dtype=int)
     subtrials = 'first10'
 
 elif learning_stage == "intermediate":
     result_dir = "Z:\\2p\\experiment1\\population_data\\intermediate learning\\"
     animal_list = [
         "MZ_CA1_WD_F3",
-        "MZ_CA1_WD_M4",
+        # "MZ_CA1_WD_M4/d1",
         "MZ_CA1_WD_M5",
         "MZ_CA1_WD_M6",
         "MZ_CA1_WD_M7",
@@ -118,14 +109,14 @@ elif learning_stage == "intermediate":
         "MZ_CA1_WD_JB_54",
         "MZ_CA1_WD_JB_55"
     ]
-    day_list = [3, 1, 2, 3, 2, 2, 3, 8]
+    day_list = [3, 3, 4, 4, 4, 4, 7]
     subtrials = 'all'
-
+      
 elif learning_stage == "late":
     result_dir = "Z:\\2p\\experiment1\\population_data\\late learning\\"
     animal_list = [
         "MZ_CA1_WD_F3",
-        # "MZ_CA1_WD_M4",
+        # "MZ_CA1_WD_M4/d5",
         "MZ_CA1_WD_M5",
         "MZ_CA1_WD_M6",
         "MZ_CA1_WD_M7",
@@ -141,13 +132,17 @@ elif learning_stage == "late":
 window_size = 100
 frames_to_reward = delay_to_reward * framerate
 pre_window_size = pre_cue_window * framerate
-        
+
+# %debug
 # Load and concatenate population data across animals
 populationdata, animal_id = load_population_data(animal_list, day_list, data_dir, result_dir, target_frames, pre_cue_window, framerate, subtrials=subtrials)
-# optional 
+
+# optional for training on certain trial types
 cs1_data = populationdata[:, :window_size]
 cs2_data = populationdata[:, window_size:2*window_size]
 cs3_data = populationdata[:, 2*window_size:]
+# train_data = np.hstack([cs1_data, cs3_data])
+# trial_types = ['CS1+','CS3-']
 
 train_data = populationdata
 trial_types = ['CS1+', 'CS2+', 'CS3-']
@@ -156,238 +151,37 @@ trial_types = ['CS1+', 'CS2+', 'CS3-']
 pca_path = os.path.join(result_dir, "pca_model.pickle")
 transformed_path = os.path.join(result_dir, "transformed_data.npy")
 
-## -------------------------------------------------------------------------------------------------------
-## STEP 1: Dimensionality reduction with PCA
-# Load saved data and models if exist
-if all(os.path.exists(p) for p in [pca_path, transformed_path]):
-    with open(pca_path, "rb") as f:
-        pca_data = pickle.load(f)
-        pca = pca_data["pca"]
-        num_retained_pcs = pca_data["num_retained_pcs"]
-        
-    transformed_data = np.load(transformed_path)   
-else:
-    pca = PCA(n_components=min(train_data.shape[0], train_data.shape[1]), whiten=True)
-    pca.fit(train_data)
-    pca_vectors = pca.components_
-    x = 100 * pca.explained_variance_ratio_
-    xprime = x - (x[0] + (x[-1] - x[0]) / (x.size - 1) * np.arange(x.size))
-    num_retained_pcs = np.argmin(xprime)
-
-    # # dimension-reduced data on the first principal components
-    transformed_data = pca.transform(train_data)
-    np.save(os.path.join(result_dir, "transformed_data.npy"), transformed_data)
-    
-    # Save PCA model
-    with open(pca_path, "wb") as f:
-        pickle.dump({
-            "pca": pca,
-            "num_retained_pcs": num_retained_pcs
-        }, f)       
-    
-    # Plot PC screen plot
-    fig_pc_screenplot = plot_PC_screenplot(pca, x, num_retained_pcs)
-    fig_pc_screenplot.savefig(
-        os.path.join(result_dir, "PC_screenplot.png"), format="png"
-    )
-    plt.close(fig_pc_screenplot)
-
-    # Plot PCs
-    fig_pcs = plot_PCs(
-        pca_vectors,
-        num_retained_pcs,
-        trial_types,
-        window_size,
-        pre_window_size,
-        frames_to_reward,
-        framerate,
-    )
-    fig_pcs.savefig(os.path.join(result_dir, "PCs.png"), format="png")
-    plt.close(fig_pcs)
-
-## -------------------------------------------------------------------------------------------------------
-## STEP 2: Clustering
-# Choose model, options are "SC_discretize", "SC_kmeans", 
-# "KMeans", "AgglomerativeClustering"
-clustering_model = "SC_discretize"
-clustering_path = os.path.join(result_dir, f"clustering_model_{clustering_model}.pickle")
-labels_path = os.path.join(result_dir, f"clusterlabels_{clustering_model}.npy")
-
-if all(os.path.exists(p) for p in [clustering_path, labels_path]):    
-    
-    with open(clustering_path, "rb") as f:
-        cluster_data = pickle.load(f)
-        model = cluster_data["model"]
-        n_clusters = cluster_data["n_clusters"]
-        n_nearest_neighbors = cluster_data["n_neighbors"]
-    
-    newlabels = np.load(labels_path)
+# Load cluster labels if exist
+if os.path.exists(os.path.join(result_dir, "clusterlabels.npy")):
+    newlabels = np.load(os.path.join(result_dir, "clusterlabels.npy"))   
     uniquelabels = list(set(newlabels))
-    
-else:    
-    max_n_clusters = 9  # initialize nclusters, can run more but takes longer, 9 is relatively optimal
-    # iTers = 100
-    possible_n_clusters = np.arange(2, max_n_clusters + 1)  # has to be at least two
-    possible_n_nearest_neighbors = np.array(
-        [100, 200, 300, 500, 750, 1000]
-    )  # depends on the size of the data, for a data with 300 neurons, the above is fine
-    
-    silhouette_scores = np.nan*np.ones((possible_n_clusters.size,
-                                        possible_n_nearest_neighbors.size,
-                                        ))
+    assert len(newlabels)==train_data.shape[0], "Cluster labels length does not match data points."
+    print("Loaded existing cluster labels, skip clustering step.")
     
     
-    # Fit clusters with your clustering model of choice
-    for nnidx, nn in enumerate(possible_n_nearest_neighbors):
-        G = build_knn(transformed_data[:,:num_retained_pcs], nn)
-
-        for n_clustersidx, n_clusters in enumerate(possible_n_clusters): 
-            
-            temp_data = transformed_data[:, :num_retained_pcs]
-            labels = get_initial_cluster_labels(temp_data, clustering_model, n_clusters, nn, G=G)
-            
-            # silhouette coeff is  calculated as (mean near-cluster distance - mean intra-cluster distance) / max of the two, 
-            # 1 is the best, -1 is the worst `                
-            silhouette_scores[n_clustersidx, nnidx] = silhouette_score(transformed_data[:,:num_retained_pcs],
-                                                                    labels,
-                                                                    metric='cosine') 
-
-            print('Done with numclusters = %d, num nearest neighbors = %d: score = %.3f'%(n_clusters,
-                                                                                        nn,
-                                                                                        np.nanmean(silhouette_scores[
-                                                                                        n_clustersidx,
-                                                                                        nnidx])))
-    print("Done with model fitting")
-
-    temp = {
-        "possible_n_clusters": possible_n_clusters,
-        "possible_n_nearest_neighbors": possible_n_nearest_neighbors,
-        "silhouette_scores": silhouette_scores,
-        "shape": "cluster_nn"
-    }
-    
-    # Save the silhouette scores
-    with open(os.path.join(result_dir, "silhouette_scores.pickle"), "wb") as f:
-        pickle.dump(temp, f)
-    # with open(os.path.join(result_dir, "silhouette_scores.pickle"), "rb") as f:
-    #     silhouette_scores = pickle.load(f)
-        
-    # Identify optimal parameters from the above parameter space
-    # temp = np.where(
-    #     silhouette_scores["silhouette_scores"]== np.nanmax(silhouette_scores"silhouette_scores"]))
-    # n_clusters = silhouette_scores["possible_n_clusters"][temp[0][0]]
-    # n_nearest_neighbors = silhouette_scores["possible_n_nearest_neighbors"][temp[1][0]]
-    
-    
-    temp = np.where(silhouette_scores==np.nanmax(silhouette_scores))
-    n_clusters = temp[0][0]+2 
-    n_nearest_neighbors = possible_n_nearest_neighbors[temp[1][0]]    
-    
-    print("Optimal number of clusters:",
-          n_clusters,
-          "; Optimal neighbors:",
-          n_nearest_neighbors)
-    
-## -------------------------------------------------------------------------------------------------------
-    ## STEP 3: Redo clustering with these optimal parameters
-    # model = SpectralClustering(
-    #     n_clusters=n_clusters,
-    #     affinity="nearest_neighbors",
-    #     n_neighbors=n_nearest_neighbors,
-    #     assign_labels='kmeans'
-    # )
-    # model = KMeans(n_clusters=n_clusters)
-    # model = AgglomerativeClustering(n_clusters=9,
-    #                                 affinity='l1',
-    #                                 linkage='average')
-    model = SpectralClustering(n_clusters=n_clusters, 
-                           affinity='nearest_neighbors', 
-                           n_neighbors=n_nearest_neighbors,
-                           assign_labels='discretize',
-                           eigen_solver='arpack',
-                           n_jobs=-1)
-    model.fit(transformed_data[:, :num_retained_pcs])
-
-    temp = silhouette_score(
-        transformed_data[:, :num_retained_pcs], model.labels_, metric="cosine"
-    )
-    print(
-        "Number of clusters = %d, average silhouette = %.3f"
-        % (len(set(model.labels_)), temp)
-    )
-
-    # # Save this optimal clustering model.
-    with open(clustering_path, "wb") as f:
-        pickle.dump({
-            "model": model,
-            "n_clusters": n_clusters,
-            "n_neighbors": n_nearest_neighbors
-        }, f)
-
-    # Rename the clusters so that the first cluster will have the most
-    # positive response and the last cluster will have the most negative response.
-    newlabels = reorder_clusters(train_data, pre_window_size, model.labels_)
-    # Create a new variable containing all unique cluster labels
-    uniquelabels = list(set(newlabels))
-    np.save(os.path.join(result_dir, "clusterlabels.npy"), newlabels)
-
-## -------------------------------------------------------------------------------------------------------
-# Plots
-# Plot animal's contribution for each cluster
-df_contrib_by_animal = pd.DataFrame(
-    {'Animal': animal_id,
-        'Cluster': newlabels}
-)
-cluster_counts = df_contrib_by_animal.groupby(['Cluster', 'Animal']).size().unstack(fill_value=0)
-cluster_percent = cluster_counts.divide(cluster_counts.sum(axis=1), axis=0)
-print("\nNeuron counts per cluster per animal:")
-print(cluster_counts)
-# Save as CSV
-cluster_counts.to_csv(os.path.join(result_dir, "cluster_counts.csv"))
-cluster_percent.to_csv(os.path.join(result_dir, "cluster_percent.csv"))
-
-# Plot heatmap
-plt.figure(figsize=(10, 6))
-sns.heatmap(cluster_percent, annot=True, cmap="viridis", fmt=".2f")
-plt.title("Proportion of neurons from each animal in each cluster")
-plt.ylabel("Cluster")
-plt.xlabel("Animal")
-plt.tight_layout()
-plt.savefig(os.path.join(result_dir, "cluster_contribution_heatmap.png"))
-plt.show()
+# Load ROI ID for each animal on the previous training day "late"
+trained_day_list = [7, 6, 5, 6, 6, 8, 12]
+target_day_list = [[1, 2, 3, 5, 10],
+                   [1, 2, 3, 5, 10],
+                   [1, 2, 3, 6, 9],
+                   [1, 2, 3, 5, 9],
+                   [1, 2, 3, 5, 10],
+                   [1, 2, 3, 5, 7, 10],
+                   [1, 2, 3, 9, 14]]
+skip_map = {"MZ_CA1_WD_F3": 2} # (plane_index, day_index) to skip missing data
+filtered_ROIs_across_sessions, filtered_labels = get_filtered_rois_per_animal_plane(animal_list, trained_day_list, data_dir, newlabels, target_day_list, skip_map)
 
 
-# Plot silhouette coefficient scores for each cluster
-fig_silouette = make_silhouette_plot(
-    transformed_data[:, :num_retained_pcs], model.labels_
-)
-fig_silouette.savefig(os.path.join(result_dir, "silouette.png"), format="png")
-plt.close(fig_silouette)
+test_day_list = np.ones(7, dtype=int) # input signle day for each animal
+filtered_d1, animal_list, foundcell_idx, foundcell_flags, new_labels_test_day = load_population_data_filtered(
+    animal_list, 
+    test_day_list, 
+    data_dir, 
+    result_dir, 
+    target_frames, 
+    pre_cue_window, 
+    framerate, 
+    filtered_ROIs_across_sessions)
 
-
-# Plot activity clusters under each CS
-fig_activity_cluster = plot_activity_clusters(
-    train_data,
-    uniquelabels,
-    newlabels,
-    trial_types,
-    [15, 100],
-    window_size,
-    pre_window_size,
-    frames_to_reward,
-    framerate,
-)
-fig_activity_cluster.savefig(
-    os.path.join(result_dir, "activity_clusters.png"), format="png"
-)
-plt.close(fig_activity_cluster)
-
-
-# Plot all cluster pairs
-fig_cluster_pairs = plot_cluster_pairs(
-    transformed_data, uniquelabels, newlabels, num_retained_pcs
-)
-fig_cluster_pairs.savefig(os.path.join(result_dir, "cluster_pairs.png"), format="png")
-plt.close(fig_cluster_pairs)
-
+filtered_ROIs_across_sessions['MZ_CA1_WD_F3'][0]
 
