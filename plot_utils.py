@@ -731,3 +731,133 @@ def plot_decoding_accuracy_across_time(accuracy, accuracy_chance, time_labels=No
     fig.tight_layout()
     
     return fig
+
+
+def plot_activity_clusters_pooled_multiday(
+    populationdata,   # (Ncells, max_days, trial_types*window_size) with NaNs
+    labels,           # (Ncells,)
+    uniquelabels,
+    numdays,
+    trial_types,
+    sortwindow,
+    window_size,
+    pre_window_size,
+    frames_to_reward,
+    framerate,
+    day_labels:list,
+    reference_day=0,
+    cmax=0.1,
+):
+    colors_for_key = {"CS1+": (0, 0.5, 1), "CS2+": (1, 0.5, 0), "CS3-": (0.5, 0.5, 0.5)}
+
+    n_clusters = len(uniquelabels)
+    n_cols = n_clusters * numdays
+    n_rows = len(trial_types) + 1
+
+    fig, axs = plt.subplots(
+        n_rows, n_cols,
+        figsize=(2 * n_cols, 2 * n_rows),
+        squeeze=False
+    )
+
+    cbar_ax = fig.add_axes([0.94, 0.3, 0.01, 0.4])
+    cbar_ax.tick_params(width=0.5)
+
+    global_min, global_max = np.inf, -np.inf
+
+    def col_of(c_idx, day):
+        return c_idx * numdays + day
+
+    for c_idx, cluster in enumerate(uniquelabels):
+        idx = np.where(labels == cluster)[0]
+        if idx.size == 0:
+            continue
+
+        # sorting order based on reference_day and first trial type, only among cells that exist there
+        ref_exists = ~np.isnan(populationdata[idx, reference_day, 0])
+        idx_ref = idx[ref_exists]
+        if idx_ref.size == 0:
+            continue
+
+        ref = populationdata[idx_ref, reference_day, 0*window_size:(0+1)*window_size]
+        sortresponse = np.argsort(np.mean(ref[:, sortwindow[0]:sortwindow[1]], axis=1))[::-1]
+        idx_sorted = idx_ref[sortresponse]
+
+        for day in range(numdays):
+            col = col_of(c_idx, day)
+
+            # only keep cells that exist in this day (not NaN)
+            day_exists = ~np.isnan(populationdata[idx_sorted, day, 0])
+            idx_day = idx_sorted[day_exists]
+
+            for k, tempkey in enumerate(trial_types):
+                temp = populationdata[
+                    idx_day, day,
+                    k * window_size : (k + 1) * window_size
+                ]
+
+                # update global PSTH ylim
+                if temp.size > 0:
+                    mean_response = np.mean(temp, axis=0)
+                    global_min = min(global_min, float(np.min(mean_response)))
+                    global_max = max(global_max, float(np.max(mean_response)))
+
+                # heatmap
+                sns.heatmap(
+                    temp,
+                    ax=axs[k, col],
+                    cmap=plt.get_cmap("coolwarm"),
+                    vmin=-cmax,
+                    vmax=cmax,
+                    cbar=(c_idx == 0 and day == 0),
+                    cbar_ax=cbar_ax if (c_idx == 0 and day == 0) else None,
+                    cbar_kws={"label": "Normalized fluorescence"},
+                )
+                axs[k, col].grid(False)
+                axs[k, col].tick_params(width=0.5)
+                axs[k, col].set_xticklabels([])
+                axs[k, col].set_yticks([])
+                axs[k, col].axvline(pre_window_size, linestyle="--", color="k", linewidth=0.5)
+                axs[k, col].axvline(pre_window_size + frames_to_reward, linestyle="--", color="k", linewidth=0.5)
+
+                if col == 0:
+                    axs[k, col].set_ylabel(f"{tempkey}\nNeurons")
+
+                # PSTH (bottom row)
+                axp = axs[-1, col]
+                axp = tsplot(
+                    temp,
+                    ax=axp,
+                    color=colors_for_key.get(tempkey, (0, 0, 0)),
+                    label=tempkey if (c_idx == n_clusters - 1 and day == numdays - 1) else None,
+                )
+                axp.axvline(pre_window_size, linestyle="--", color="k", linewidth=0.5)
+                axp.axvline(pre_window_size + frames_to_reward, linestyle="--", color="k", linewidth=0.5)
+                axp.set_xticks([0, pre_window_size, pre_window_size + frames_to_reward, window_size])
+                axp.set_xticklabels(
+                    [str(int((a - pre_window_size) / framerate)) for a in
+                     [0, pre_window_size, pre_window_size + frames_to_reward, window_size]]
+                )
+                standardize_plot_graphics(axp)
+
+            axs[0, col].set_title(
+                f"Cluster {int(cluster)+1}\n {day_labels[day]}\n(n={len(idx_day)})"
+            )
+
+    # unify PSTH y-lims
+    if np.isfinite(global_min) and np.isfinite(global_max):
+        buffer = 0.01
+        for col in range(n_cols):
+            axs[-1, col].set_ylim(global_min - buffer, global_max + buffer)
+
+    axs[-1, 0].set_ylabel("Mean fluor")
+    axs[-1, -1].legend(
+        bbox_to_anchor=(0.94, 0.22),
+        bbox_transform=fig.transFigure,
+        frameon=False,
+    )
+
+    fig.text(0.5, 0.05, "Time from cue (s)", fontsize=12, ha="center", va="center")
+    fig.subplots_adjust(left=0.08, right=0.93, bottom=0.1, top=0.86, wspace=0.1, hspace=0.1)
+
+    return fig

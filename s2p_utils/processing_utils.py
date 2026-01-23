@@ -1113,10 +1113,7 @@ def get_filtered_rois_per_animal_plane(animal_list, day_list, data_dir, oldlabel
     filtered_rois_per_animal_plane = {}
     newlabels_flag = {}
     
-    if target_day_list is None:
-        per_animal_req_day = None # use all days per animal
-    else:
-        per_animal_req_day = target_day_list
+    per_animal_req_day = target_day_list
     
     for a, (day, animal) in enumerate(zip(day_list, animal_list)):
         top_animal_dir = os.path.join(data_dir, animal)
@@ -1138,13 +1135,8 @@ def get_filtered_rois_per_animal_plane(animal_list, day_list, data_dir, oldlabel
         
         for ip in range(num_planes):
             # Load ROI table for each animal and the day columns 
-            ROI_table_across_sessions = pd.read_csv(os.path.join(top_animal_dir, f"ROI_table_full_plane{ip}.csv"))
-            all_day_cols = [col for col in ROI_table_across_sessions.columns if re.match(r'^\d+$', str(col).strip())]
-
-            # Find the rows where the trained day column matches the current plane's cell indices for all the target sessions
-            matched_rows_on_trained_day = ROI_table_across_sessions[ROI_table_across_sessions[trained_day_col].isin(cells_idx[ip])]
-            matched_rows_on_trained_day = matched_rows_on_trained_day.sort_values(by=trained_day_col)
-            newlabels_flag[animal][ip] = np.full(len(matched_rows_on_trained_day), fill_value=-1)  # Initialize with -1
+            ROI_table = pd.read_csv(os.path.join(top_animal_dir, f"ROI_table_full_plane{ip}.csv"))
+            all_day_cols = [col for col in ROI_table.columns if re.match(r'^\d+$', str(col).strip())]   
             
             # Skip the plane if data is missing for some days
             if skip_if_missing_plane_day and animal in skip_if_missing_plane_day:
@@ -1153,24 +1145,43 @@ def get_filtered_rois_per_animal_plane(animal_list, day_list, data_dir, oldlabel
                     print(f"Skipping animal {animal}, plane {ip}")
                     filtered_rois_per_animal_plane[animal][ip] = []
                     continue
-                
+            
+            # Find the rows where the trained day column matches the current plane's cell indices for all the target sessions
+            cells_in_plane = np.asarray(cells_idx[ip]).astype(int)
+            matched = ROI_table[ROI_table[trained_day_col].isin(cells_in_plane)].copy()
+            matched = matched.sort_values(by=trained_day_col).reset_index(drop=True)
+            
+            newlabels_flag[animal][ip] = np.full(len(matched), fill_value=-1)  # Initialize with -1      
+                      
             # correct for 0-based indexing
-            if per_animal_req_day[a] is None:
+            if per_animal_req_day is None or per_animal_req_day[a] is None:
                 required_day_cols = all_day_cols
             else:
-                required_day_cols = [str(d-1) for d in per_animal_req_day[a] if str(d) in all_day_cols]
-            
+                required_day_cols = []
+                for d in per_animal_req_day[a]:
+                    k = str(d - 1)  # consistent with table column naming
+                    if k in all_day_cols:
+                        required_day_cols.append(k)            
             
             # Get the ROIs that also have matches on target day thats not -1 (both int or str)
-            all_valid_mask = (matched_rows_on_trained_day[required_day_cols].astype(str) != '-1').all(axis=1)
-            index_filtered_ROIs = np.flatnonzero(all_valid_mask.values).tolist()
-            filtered_ROIs = matched_rows_on_trained_day[all_valid_mask].copy()
+            all_valid_mask = (matched[required_day_cols].astype(str) != '-1').all(axis=1)
+            filtered_ROIs = matched[all_valid_mask].copy()
             
             # Get the remaining cell indices on trained day based on the target days
-            remaining_cells = filtered_ROIs[trained_day_col].astype(int).values.tolist()
+            remaining_cell_ids = filtered_ROIs[trained_day_col].astype(int).values
+            
+            # map cell ID -> local index -> global index
+            # (IMPORTANT: do NOT add cell_id directly to plane offset)
+            local_idx = []
+            for cid in remaining_cell_ids:
+                hits = np.where(cells_in_plane == cid)[0]
+                if hits.size == 0:
+                    continue  # should not happen since we isin() filtered above
+                local_idx.append(int(hits[0]))
+            local_idx = np.asarray(local_idx, dtype=int)
             
             # Get the new labels for these cells and sort by day 1 index
-            global_indices = [plane_offsets_for_global_idx[ip] + idx for idx in remaining_cells]
+            global_indices = plane_offsets_for_global_idx[ip] +local_idx
             assert(len(global_indices) == len(filtered_ROIs)), "Length mismatch!"
             
             labels = np.asarray(oldlabels)[global_indices].tolist()
@@ -1183,10 +1194,15 @@ def get_filtered_rois_per_animal_plane(animal_list, day_list, data_dir, oldlabel
             # newlabels_per_animal_plane.extend(labels)
             
             filtered_rois_per_animal_plane[animal][ip] = filtered_ROIs
+
+            # mark flags aligned to matched rows after sorting/reset_index
+            # (rows in `filtered` are subset of `matched`)
+            index_filtered_ROIs = np.flatnonzero(all_valid_mask.values).tolist()
+
             for row, label in zip(index_filtered_ROIs, labels):
                 newlabels_flag[animal][ip][row] = label
             
-            assert (len(filtered_rois_per_animal_plane[animal][ip]) == len(labels)), "Length mismatch!"
+            assert (len(filtered_ROIs) == len(labels)), "Length mismatch!"
             # Now filtered_rois_per_animal_plane[animal][ip] is the list of cell indices within plane ip for animal, present on day 1 and in ROI table
 
     return filtered_rois_per_animal_plane, newlabels_flag
@@ -1207,7 +1223,7 @@ def load_population_data_filtered(
     populationdata_list = []
     animal_id = []
     foundcells_idx_full = []
-    foundcells_flags_full = []
+    # foundcells_flags_full = []
     new_labels_on_test_day = []  
                    
     for animal, day in zip(animal_list, day_list):
@@ -1224,7 +1240,7 @@ def load_population_data_filtered(
         cell_list_full = np.concatenate([np.asarray(x) for x in cells_idx])
 
         total_cells = len(cell_list_full)
-        print(f"Total cells: {total_cells}")
+        # print(f"Total cells: {total_cells}")
 
         foundcell_flags_per_animal = np.zeros(total_cells, dtype=int)
 
@@ -1323,10 +1339,10 @@ def load_population_data_filtered(
             populationdata_list.append(tempdata)
             animal_id.extend([animal] * len(global_indices))
             foundcells_idx_full.extend(global_indices.tolist())
-            foundcells_flags_full.extend(found_flags)
+            # foundcells_flags_full.extend(found_flags)
 
         # append flags for this animal
-        foundcells_flags_full.extend(foundcell_flags_per_animal.tolist())
+        # foundcells_flags_full.extend(foundcell_flags_per_animal.tolist())
 
     # --- Final assembly ---
     if populationdata_list:
@@ -1337,4 +1353,173 @@ def load_population_data_filtered(
         animal_id = np.array([])
     assert(len(populationdata) == len(new_labels_on_test_day)), "Length mismatch between population data and new labels!"
 
-    return populationdata, animal_id, foundcells_idx_full, foundcells_flags_full, new_labels_on_test_day
+    return populationdata, animal_id, foundcells_idx_full, new_labels_on_test_day
+
+
+def load_population_data_multiday(
+    animal_list,
+    days_per_animal,
+    data_dir,
+    target_frames,
+    pre_cue_window,
+    framerate,
+    filtered_rois_per_animal_plane,
+    subtrials=None,
+    reference_day_index=0,
+    strict=False,              # if True, raise on mismatch; if False, drop unmatched rows
+    verbose=True
+):
+    def _subset_trials_and_baseline(rawdata):
+        n_trials = [len(rawdata[i]) for i in range(rawdata.shape[0])]
+        min_trials = min(n_trials)
+        rng = np.random.default_rng()
+
+        idxs_per_cue = []
+        if subtrials in (None, "all"):
+            K = min_trials
+            for n in n_trials:
+                if n == K:
+                    idxs_per_cue.append(np.arange(n))
+                else:
+                    idxs = np.sort(rng.choice(n, size=K, replace=False))
+                    idxs_per_cue.append(idxs)
+        elif subtrials == "first10":
+            K = min(10, min_trials)
+            for n in n_trials:
+                idxs_per_cue.append(np.arange(min(n, K)))
+        elif subtrials == "last10":
+            K = min(10, min_trials)
+            for n in n_trials:
+                start = max(0, n - K)
+                idxs_per_cue.append(np.arange(start, n))
+        else:
+            raise ValueError(f"Unknown subtrials={subtrials}")
+
+        subset_raw = [np.take(a, idx, axis=0) for a, idx in zip(rawdata, idxs_per_cue)]
+        subset_ave = np.mean(subset_raw, axis=1)  # (trial_types, ncells, nframes)
+
+        b = min(int(pre_cue_window * framerate), subset_ave.shape[2])
+        baseline = np.mean(subset_ave[:, :, :b], axis=2, keepdims=True)
+        subset_ave = subset_ave - baseline
+
+        return subset_ave.transpose(1, 0, 2)  # (ncells, trial_types, nframes)
+
+    population_rows = []
+    labels_rows = []
+    animal_id_rows = []
+    cell_keys = []
+
+    for ai, animal in enumerate(animal_list):
+        days = list(days_per_animal[ai])
+        if verbose:
+            print(f"\n=== Loading {animal} days {days} ===")
+
+        roi_table_for_animal = filtered_rois_per_animal_plane[animal]
+
+        for ip, filtered_df in roi_table_for_animal.items():
+            if filtered_df is None or len(filtered_df) == 0:
+                continue
+            if "labels" not in filtered_df.columns:
+                raise ValueError(f"{animal} plane {ip}: filtered ROI table missing 'labels' column.")
+
+            # Day keys in ROI table are 0-based strings
+            day_keys = [str(d - 1) for d in days]
+            for k in day_keys:
+                if k not in filtered_df.columns:
+                    if verbose:
+                        print(f"  [skip] {animal} plane {ip}: ROI table missing day col {k}")
+                    day_keys = None
+                    break
+            if day_keys is None:
+                continue
+
+            # --- Build robust "present on all days" mask using cells_idx existence ---
+            present_mask = np.ones(len(filtered_df), dtype=bool)
+
+            # Cache cells_idx sets per day for this plane
+            cells_sets = {}
+            plane_offsets_per_day = {}
+
+            for day in days:
+                file_dir = os.path.join(data_dir, animal, f"d{day}", "files")
+                cells_idx = np.load(os.path.join(file_dir, "cell_idx.npy"), allow_pickle=True)
+                if ip >= len(cells_idx):
+                    if strict:
+                        raise ValueError(f"{animal} day {day}: plane {ip} missing in cell_idx.npy")
+                    present_mask[:] = False
+                    break
+
+                cells_in_plane = np.asarray(cells_idx[ip]).astype(int)
+                cells_sets[day] = set(cells_in_plane.tolist())
+                plane_offsets_per_day[day] = np.cumsum([0] + [len(x) for x in cells_idx[:-1]])
+
+                # must be mapped (not -1) AND exist in that day's cells_idx for this plane
+                key = str(day - 1)
+                mapped = (filtered_df[key].astype(str) != "-1")
+                exists = filtered_df[key].astype(int).isin(cells_sets[day])
+                present_mask &= (mapped & exists)
+
+            df_common = filtered_df.loc[present_mask].copy()
+            if len(df_common) == 0:
+                if verbose:
+                    print(f"  [none] {animal} plane {ip}: no cells present on all requested days")
+                continue
+
+            # Labels are fixed per cell (from filtered_df)
+            plane_labels = df_common["labels"].astype(int).values
+
+            n_common = len(df_common)
+            n_days = len(days)
+            plane_data = np.zeros((n_common, n_days, target_frames), dtype=float)
+
+            # --- Extract data for each day ---
+            for di, day in enumerate(days):
+                file_dir = os.path.join(data_dir, animal, f"d{day}", "files")
+                rawdata = np.load(os.path.join(file_dir, "F_around_cue_raw.npy"), allow_pickle=True)
+                cells_idx = np.load(os.path.join(file_dir, "cell_idx.npy"), allow_pickle=True)
+
+                subset_by_cell = _subset_trials_and_baseline(rawdata)
+
+                cells_in_plane = np.asarray(cells_idx[ip]).astype(int)
+                day_key = str(day - 1)
+                cell_ids_today = df_common[day_key].astype(int).values
+
+                # map cell_id -> local index (fast dict)
+                pos = {cid: i for i, cid in enumerate(cells_in_plane.tolist())}
+                local_idx = np.array([pos[cid] for cid in cell_ids_today], dtype=int)
+
+                plane_offsets = plane_offsets_per_day[day]
+                global_idx = plane_offsets[ip] + local_idx
+
+                tempdata = subset_by_cell[global_idx]      # (n_common, trial_types, nframes)
+                tempdata = tempdata.reshape(n_common, -1)  # flatten
+
+                if tempdata.shape[1] < target_frames:
+                    pad = target_frames - tempdata.shape[1]
+                    tempdata = np.pad(tempdata, ((0, 0), (0, pad)))
+                else:
+                    tempdata = tempdata[:, :target_frames]
+
+                plane_data[:, di, :] = tempdata
+
+            population_rows.append(plane_data)
+            labels_rows.append(plane_labels)
+            animal_id_rows.extend([animal] * n_common)
+            for ridx in df_common.index.tolist():
+                cell_keys.append((animal, ip, int(ridx)))
+
+            if verbose:
+                # helpful diagnostics: how many rows were dropped because of day mismatch
+                dropped = len(filtered_df) - len(df_common)
+                print(f"  {animal} plane {ip}: kept {len(df_common)} / {len(filtered_df)} (dropped {dropped})")
+
+    if len(population_rows) == 0:
+        return np.zeros((0, 0, target_frames)), np.array([]), [], np.array([]), days_per_animal
+
+    populationdata = np.concatenate(population_rows, axis=0)
+    labels = np.concatenate([np.asarray(x) for x in labels_rows], axis=0)
+    animal_id = np.asarray(animal_id_rows)
+
+    assert populationdata.shape[0] == len(labels) == len(animal_id) == len(cell_keys)
+
+    return populationdata, animal_id, cell_keys, labels, days_per_animal
