@@ -10,11 +10,24 @@ from sklearn.metrics import (
     silhouette_samples,
 )
 from sklearn.manifold import TSNE
+import math
+from common_func import (
+    central_tendency,
+    standardize_plot_graphics,
+    CDFplot,
+    t_test,
+    convert_pvalue_to_asterisks,
+    point_to_line,
+    getCumsumChangePoint,
+    plot_raw_licks,
+    getCumsumChangePoint,
+)
 
 sns.set_style("ticks")
 import matplotlib as mpl
 import scipy.stats as stats
 from statsmodels.stats.multitest import multipletests
+from matplotlib.colors import to_rgba
 
 mpl.rcParams["axes.titlesize"] = 12
 mpl.rcParams["axes.labelsize"] = 10
@@ -734,8 +747,8 @@ def plot_decoding_accuracy_across_time(accuracy, accuracy_chance, time_labels=No
 
 
 def plot_activity_clusters_pooled_multiday(
-    populationdata,   # (Ncells, max_days, trial_types*window_size) with NaNs
-    labels,           # (Ncells,)
+    populationdata,
+    labels,
     uniquelabels,
     numdays,
     trial_types,
@@ -744,21 +757,24 @@ def plot_activity_clusters_pooled_multiday(
     pre_window_size,
     frames_to_reward,
     framerate,
-    day_labels:list,
+    day_labels: list,
     reference_day=0,
     cmax=0.1,
+    percent_keep=0.30,   # <-- NEW (0-1], e.g. 0.30 for top 30%
 ):
     colors_for_key = {"CS1+": (0, 0.5, 1), "CS2+": (1, 0.5, 0), "CS3-": (0.5, 0.5, 0.5)}
+
+    # clamp percent_keep
+    if percent_keep is None:
+        percent_keep = 1.0
+    percent_keep = float(percent_keep)
+    percent_keep = max(0.0, min(1.0, percent_keep))
 
     n_clusters = len(uniquelabels)
     n_cols = n_clusters * numdays
     n_rows = len(trial_types) + 1
 
-    fig, axs = plt.subplots(
-        n_rows, n_cols,
-        figsize=(2 * n_cols, 2 * n_rows),
-        squeeze=False
-    )
+    fig, axs = plt.subplots(n_rows, n_cols, figsize=(2 * n_cols, 2 * n_rows), squeeze=False)
 
     cbar_ax = fig.add_axes([0.94, 0.3, 0.01, 0.4])
     cbar_ax.tick_params(width=0.5)
@@ -783,6 +799,12 @@ def plot_activity_clusters_pooled_multiday(
         sortresponse = np.argsort(np.mean(ref[:, sortwindow[0]:sortwindow[1]], axis=1))[::-1]
         idx_sorted = idx_ref[sortresponse]
 
+        # --- NEW: keep only the top X% of cells in this cluster (based on idx_sorted) ---
+        if percent_keep < 1.0:
+            n_keep = max(1, int(np.ceil(percent_keep * idx_sorted.size)))
+            idx_sorted = idx_sorted[:n_keep]
+        # ---------------------------------------------------------------------------
+
         for day in range(numdays):
             col = col_of(c_idx, day)
 
@@ -791,18 +813,13 @@ def plot_activity_clusters_pooled_multiday(
             idx_day = idx_sorted[day_exists]
 
             for k, tempkey in enumerate(trial_types):
-                temp = populationdata[
-                    idx_day, day,
-                    k * window_size : (k + 1) * window_size
-                ]
+                temp = populationdata[idx_day, day, k * window_size:(k + 1) * window_size]
 
-                # update global PSTH ylim
                 if temp.size > 0:
                     mean_response = np.mean(temp, axis=0)
                     global_min = min(global_min, float(np.min(mean_response)))
                     global_max = max(global_max, float(np.max(mean_response)))
 
-                # heatmap
                 sns.heatmap(
                     temp,
                     ax=axs[k, col],
@@ -823,7 +840,6 @@ def plot_activity_clusters_pooled_multiday(
                 if col == 0:
                     axs[k, col].set_ylabel(f"{tempkey}\nNeurons")
 
-                # PSTH (bottom row)
                 axp = axs[-1, col]
                 axp = tsplot(
                     temp,
@@ -840,11 +856,11 @@ def plot_activity_clusters_pooled_multiday(
                 )
                 standardize_plot_graphics(axp)
 
+            # show n after filtering + availability on that day
             axs[0, col].set_title(
                 f"Cluster {int(cluster)+1}\n {day_labels[day]}\n(n={len(idx_day)})"
             )
 
-    # unify PSTH y-lims
     if np.isfinite(global_min) and np.isfinite(global_max):
         buffer = 0.01
         for col in range(n_cols):
@@ -861,3 +877,364 @@ def plot_activity_clusters_pooled_multiday(
     fig.subplots_adjust(left=0.08, right=0.93, bottom=0.1, top=0.86, wspace=0.1, hspace=0.1)
 
     return fig
+
+
+### HERE BELOW ARE BEHAVIORAL PLOTTING FUNCTIONS
+def convert_pvalue(pvalues):
+    psymbols = []
+    for p in pvalues:
+        if p <= 0.0001:
+            psymbols.append("****")
+        elif p <= 0.001:
+            psymbols.append("***")     
+        elif p <= 0.01:
+            psymbols.append("**")
+        elif p <= 0.05:
+            psymbols.append("*")
+        else:
+            psymbols.append("ns")
+    return psymbols
+
+
+def plot_evolution_over_learning(
+    data, cue_types, colors, numdays, pvals=None, key="Performance_to_baseline"
+):
+    fig, axs = plt.subplots(1, 3, figsize=(2 * 3, 2), dpi=200, sharey="row")
+    evolution_data = []
+    mean_licks_on_day = np.nan * np.ones((numdays, 2, len(cue_types)))  # mean, sem
+    animals = list(set(data["Animal"]))
+    # animals_to_remove = []  # ['OFC-VTAinact_16']#['mOFCinact_32']
+    # animals = [a for a in animals if a not in animals_to_remove]
+    animal_num = len(animals) 
+    # print("%d animals in %s" % (len(animals), condition))
+
+    for day in range(numdays):
+        nlicks = np.nan * np.ones((len(animals), len(cue_types)))
+        for ct, cue_type in enumerate(cue_types):
+            for a, animal in enumerate(animals):
+                temp = data[
+                    (data["Cue"] == cue_type)
+                    & (data["Day"] == str(day + 1))
+                    & (data["Animal"] == animal)
+                ][key]
+                if temp.size > 0:
+                    nlicks[a, ct] = temp
+
+            temp = nlicks[:, ct]
+            # temp = temp[np.isfinite(temp)]
+            mean_licks_on_day[day, 0, ct] = np.nanmean(temp)
+            mean_licks_on_day[day, 1, ct] = stats.sem(temp, nan_policy="omit")
+
+    if axs is not None:
+        for ct, cue_type in enumerate(cue_types):
+            ax = axs[ct]
+            ax.errorbar(
+                range(numdays),
+                mean_licks_on_day[:, 0, ct],
+                mean_licks_on_day[:, 1, ct],
+                color=colors['ave'],
+                linestyle="-",
+                linewidth=1,
+            )
+            ax.set_xticks(range(numdays))
+            ax.set_xticklabels([str(a + 1) for a in range(numdays)], fontsize=8)
+            standardize_plot_graphics(ax)
+        axs[1].set_xlabel("Session number", fontsize=10)
+    evolution_data.append(mean_licks_on_day)
+
+    if axs is not None:
+        ax = axs[0]
+        ax.set_ylabel("Mean behavioral\nperformance", fontsize=10)
+        axs[-1].annotate(
+            s="(n=%d)" % (animal_num),
+            xy=(0.4, 0.9),
+            xytext=(0.4, 0.9),
+            xycoords="axes fraction",
+            textcoords="axes fraction",
+            color=colors['ave'],
+            fontsize=7,
+            horizontalalignment="left",
+        )
+        #         ax.set_ylim([-0.5, 2])
+        
+    if pvals is not None:
+        psymbols = convert_pvalue(pvals)
+        y1 = evolution_data[0][-1, 0, 0]
+        y2 = evolution_data[1][-1, 0, 0]
+        y_pos = (y1 + y2) / 2 
+        axs[0].text(day + 0.3, y_pos, psymbols[0], fontsize=8, va='center')
+        y1 = evolution_data[0][-1, 0, 1]
+        y2 = evolution_data[1][-1, 0, 1]
+        y_pos = (y1 + y2) /2
+        axs[1].text(day + 0.3, y_pos, psymbols[1], fontsize=8, va='center')
+        if len(psymbols) > 2:
+            y1 = evolution_data[0][-1, 0, 2]
+            y2 = evolution_data[1][-1, 0, 0]
+            y_pos = (y1 + y2) /2
+            axs[2].text(day + 0.3, y_pos, psymbols[2], fontsize=8, va='center')
+    fig.tight_layout()
+    return fig, evolution_data
+
+
+def plot_cumlick_tbt(data, cue_types, colors, numdays, numtrials):
+    fig_cumlick, axs = plt.subplots(1, 3, figsize=(6,2), dpi=200, sharey='row') # one column for each cue
+    for ct, cue_type in enumerate(cue_types):
+        cumlick_animals = []
+        animals = list(set(data.keys())) #get animals 
+        for a, animal in enumerate(animals): #for each animal
+            y = data[animal][cue_type]
+            # x = np.arange(1./(len(y)), 1+1./(len(y)), 1./(len(y)))
+            x = np.arange(0, (len(y)), 1)
+            if len(x) > len(y):
+                x = x[:-1]
+            cumlick_animals.append(list(y))
+            ax = axs[ct]
+            ax.plot(x, y, color=colors['ind'], linestyle='-', linewidth=0.5)
+#             ax.axvline(float(lickidx)/(len(y)), linestyle='--', linewidth=0.5, color=colors)
+            ax.set_title(cue_type, fontsize=10)
+            if a==len(animals)-1:
+                cumlick_animals_ave = [sum(col) / float(len(col)) for col in zip(*cumlick_animals)]
+                x1 = np.arange(0, len(cumlick_animals_ave), 1)
+                # x1 = np.arange(1./len(cumlick_animals_ave), 1+1./len(cumlick_animals_ave), 1./len(cumlick_animals_ave))
+                ax.plot(x1, cumlick_animals_ave, color=colors['ave'], linestyle='-', linewidth=1)
+                standardize_plot_graphics(ax)
+
+        ax = axs[0]
+        ax.set_ylabel('Cumulative \nanticipatory licking',fontsize=10)
+        axs[1].set_xlabel('Trials',fontsize=10)
+        # axs[-1].annotate(s=condition, xy=(0.4, 0.9-0.07*c), xytext=(0.4, 0.9-0.07*c),
+        #                 xycoords='axes fraction', textcoords='axes fraction',
+        #                 color=colors, fontsize=7,
+        #                 horizontalalignment='left')
+        fig_cumlick.tight_layout()
+    return fig_cumlick
+
+
+def plot_individual_animal_cumlick(data, learnedtrial, cue_types, colors):
+    all_animals = 0
+    animals = list(set(data.keys()))
+    all_animals += len(animals)
+    fig_ind_animals, axs = plt.subplots(all_animals, len(cue_types), figsize=(2*len(cue_types), (all_animals)), sharey='row')
+
+    # correct_trial = 0
+    # trial_to_end = 0
+
+    for a, animal in enumerate(animals): #for each animal
+#         print(animal)
+        for ct, cue_type in enumerate(cue_types):
+            y = data[animal][cue_type]
+            x = np.arange(0, (len(y)), 1)
+            ax = axs[a, ct]
+            ax.plot(x, y, color=colors['ind'], linestyle='-', linewidth=1)
+            ax.plot([x[0], x[-1]], [y[0], y[-1]], linestyle='--', color='#808080')
+            if ct != 2:
+                learned_trial = learnedtrial[cue_type][animal]
+                ax.axvline(learned_trial, linestyle='--', linewidth=0.5, color=colors['ave'])
+            standardize_plot_graphics(ax)
+        ax = axs[a, 0]
+        ax.set_ylabel('Anticipatory\nlicking',fontsize=8)
+        ax.set_title(animal, fontsize=5, loc='left')
+    ax2 = axs[-1,0]
+    ax2.set_xlabel('Trials',fontsize=8)
+    ax3 = axs[-1,1]
+    ax3.set_xlabel('Trials',fontsize=8)
+    fig_ind_animals.tight_layout()
+
+    return fig_ind_animals
+
+
+def plot_changepoint(data, cue_types, colors, param:str):
+     # ylabel
+    if param == "abruptness":
+        ylabel = "Abruptness of\nlearning"
+    elif param == "learned trial":
+        ylabel = "Learned trial"
+    elif param == "mean slope after learning":
+        ylabel = "Mean slope\nafter learning"
+    else:
+        ylabel = param
+
+    fig, ax = plt.subplots(1, 1, figsize=(2, 2), dpi=200)
+
+    # --- collect all animals across cue types ---
+    animals = sorted({a for ct in cue_types for a in data.get(ct, {}).keys()})
+
+    x = np.arange(len(cue_types))
+
+    # --- plot per-animal lines ---
+    for animal in animals:
+        y = []
+        for ct in cue_types:
+            v = data.get(ct, {}).get(animal, np.nan)
+
+            # if v is array-like (e.g., list), try to reduce to a scalar
+            if isinstance(v, (list, tuple, np.ndarray)):
+                v = np.asarray(v)
+                v = np.nanmean(v) if v.size else np.nan
+
+            y.append(v)
+
+        y = np.asarray(y, dtype=float)
+        ax.plot(
+            x, y,
+            color=colors.get("ind", "0.7"),
+            linewidth=0.6,
+            marker="o",
+            markersize=2,
+        )
+
+    # --- overlay mean ± SEM per cue type ---
+    means = np.full(len(cue_types), np.nan, dtype=float)
+    sems  = np.full(len(cue_types), np.nan, dtype=float)
+
+    for i, ct in enumerate(cue_types):
+        vals = np.array(list(data.get(ct, {}).values()), dtype=float)
+
+        # if some entries are arrays, reduce them
+        if vals.dtype == object:
+            vv = []
+            for v in data.get(ct, {}).values():
+                if isinstance(v, (list, tuple, np.ndarray)):
+                    v = np.asarray(v)
+                    v = np.nanmean(v) if v.size else np.nan
+                vv.append(v)
+            vals = np.asarray(vv, dtype=float)
+
+        vals = vals[~np.isnan(vals)]
+        if vals.size > 0:
+            means[i] = np.mean(vals)
+            sems[i] = np.std(vals) / math.sqrt(vals.size)
+
+    ax.errorbar(
+        x, means, yerr=sems,
+        color=colors.get("ave", "k"),
+        linewidth=1.2,
+        marker="o",
+        markersize=3,
+        capsize=3,
+        zorder=5
+    )
+
+    # --- cosmetics ---
+    ax.set_xticks(x)
+    ax.set_xticklabels(cue_types, rotation=0)
+    ax.set_ylabel(ylabel)
+    ax.set_title(param, fontsize=10)
+
+    # optional: tighten x-limits a bit
+    ax.set_xlim(-0.3, len(cue_types) - 0.7)
+    ax.set_ylim(0, np.max(vals) * 1.2)
+
+    standardize_plot_graphics(ax)
+    fig.tight_layout()
+    return fig
+
+
+def plot_ave_psth_overlay_days(
+    psth_df,
+    cues=("CS1", "CS2", "CS3"),
+    colors=None,                 # e.g. {"ave": (0,0.5,1), "ind": (0,0.5,1)} or similar
+    row_mode="Day",              # "Day" or "Session"
+    row_values=None,             # list of days/sessions to overlay (sorted = earliest -> latest)
+    animal_weighted=True,
+    smooth_bins=0,
+    hz=True,
+    show_sem=True,
+    sem_alpha=0.15,              # base alpha for SEM; will also be scaled by day alpha
+    alpha_range=(0.25, 1.0),     # earliest -> latest darkness
+):
+    df = psth_df.copy()
+    row_col = row_mode
+
+    if row_values is None:
+        row_values = sorted(df[row_col].dropna().unique().tolist())
+
+    if colors is None:
+        colors = {"ave": "C0", "ind": "C0"}  # fallback
+
+    bin_ms = float(df["Bin_ms"].iloc[0])
+    to_hz = (bin_ms / 1000.0) if hz else 1.0
+
+    ncols = len(cues)
+    fig, axs = plt.subplots(
+        1, ncols,
+        figsize=(3.8 * ncols, 2.8),
+        dpi=200,
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
+    axs = axs[0]
+
+    def smooth(x, k):
+        if k and k > 1:
+            k = int(k)
+            ker = np.ones(k) / k
+            return np.convolve(x, ker, mode="same")
+        return x
+
+    # alpha schedule: earliest lightest -> latest darkest
+    if len(row_values) == 1:
+        alphas = [alpha_range[1]]
+    else:
+        alphas = np.linspace(alpha_range[0], alpha_range[1], len(row_values))
+
+    base_line_rgba = to_rgba(colors.get("ave", "C0"))
+    base_fill_rgba = to_rgba(colors.get("ind", colors.get("ave", "C0")))
+
+    for c, cue in enumerate(cues):
+        ax = axs[c]
+
+        for rv, a in zip(row_values, alphas):
+            sub = df[(df[row_col] == rv) & (df["Cue"] == cue)]
+            if sub.empty:
+                continue
+
+            if animal_weighted:
+                at = sub.groupby(["Animal", "Time_s"], as_index=False)["Count"].mean()
+                piv = at.pivot(index="Animal", columns="Time_s", values="Count")
+                mat = piv.to_numpy(dtype=float)
+                t = piv.columns.to_numpy(dtype=float)
+            else:
+                tt = sub.groupby(["Trial", "Time_s"], as_index=False)["Count"].mean()
+                piv = tt.pivot(index="Trial", columns="Time_s", values="Count")
+                mat = piv.to_numpy(dtype=float)
+                t = piv.columns.to_numpy(dtype=float)
+
+            mean = np.nanmean(mat, axis=0) / to_hz
+            if smooth_bins:
+                mean = smooth(mean, smooth_bins)
+
+            if mat.shape[0] > 1:
+                sem = (np.nanstd(mat, axis=0, ddof=1) / np.sqrt(mat.shape[0])) / to_hz
+            else:
+                sem = np.zeros_like(mean)
+
+            if smooth_bins:
+                sem = smooth(sem, smooth_bins)
+
+            line_rgba = (*base_line_rgba[:3], a)
+            fill_rgba = (*base_fill_rgba[:3], min(1.0, sem_alpha * a))
+
+            ax.plot(t, mean, color=line_rgba, lw=2.0, label=f"{row_col} {rv}")
+            if show_sem:
+                ax.fill_between(t, mean - sem, mean + sem, color=fill_rgba, lw=0)
+
+        # event lines
+        ax.axvline(0, color="k", linestyle="--", lw=1)
+        ax.axvline(3, color="orange", linestyle="--", lw=1)
+
+        ax.set_title(cue)
+        ax.set_xlabel("Time from cue (s)")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        if c == 0:
+            ax.set_ylabel("Lick rate (Hz)" if hz else "Count/bin")
+
+        # put legend on last cue axis
+        if c == ncols - 1:
+            ax.legend(frameon=False, fontsize=8, loc="upper right", title=row_col)
+
+    fig.tight_layout()
+    return fig, axs

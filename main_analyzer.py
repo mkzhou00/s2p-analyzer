@@ -100,11 +100,11 @@ main_folder = "Z:\\2p\\experiment1"
 
 # Animal specific parameters
 animal = "MZ_CA1_WD_M5"
-days = [3]
-num_planes_list = np.ones(12, dtype=int)*3
-num_flyback_list = np.ones(12, dtype=int)*3
-# num_planes_list = [4, 3, 3]
-# num_flyback_list = [0, 3, 3]
+days = [1]
+# num_planes_list = np.ones(12, dtype=int)*3
+# num_flyback_list = np.ones(12, dtype=int)*3
+num_planes_list = [4, 3, 3]
+num_flyback_list = [0, 3, 3]
 
 if animal == "MZ_CA1_WD_F3":
     imaging_system = "Bruker"

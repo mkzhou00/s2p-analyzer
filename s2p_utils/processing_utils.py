@@ -9,7 +9,8 @@ from sklearn.cluster import AgglomerativeClustering, SpectralClustering, KMeans
 from sklearn.neighbors import NearestNeighbors, kneighbors_graph
 from sklearn.manifold import spectral_embedding   # same code SC uses
 from sklearn.cluster._spectral import discretize 
-
+from sklearn.neighbors import NearestNeighbors
+from scipy.sparse import csr_matrix
 
 def get_cell_indices(iscell):
     """ Get indices of cells for each plane. """
@@ -240,6 +241,7 @@ def extract_events(event_df: pd.DataFrame):
         (event_df["Events"].isin([8, 9])) & (event_df["Reward"] == 0)] / 1e3)
     
     return licks, CS1, CS2, CS3, sucrose, milk
+
 
 def get_cell_only_activity(F: list, Fneu: list, spks:list, is_cell: list, num_planes: int):
     """
@@ -1031,15 +1033,67 @@ def do_time_window_decoding(
     return np.array(accuracy), np.array(accuracy_chance)
 
 
-def build_knn(X, k):
-    """Return sparse k-NN connectivity graph (CSR)."""
-    return kneighbors_graph(
-        X, k,
-        mode="connectivity",
-        include_self=True,    # matches SpectralClustering default
-        n_jobs=-1
-    )
+# def build_knn(X, k, metric="cosine"):
+#     """Return sparse k-NN connectivity graph (CSR)."""
+#     return kneighbors_graph(
+#         X, k,
+#         mode="connectivity",
+#         include_self=True,    # matches SpectralClustering default
+#         n_jobs=-1
+#     )
     
+
+def build_knn(X, k, metric="cosine", mode="distance", mutual=False, include_self=True,
+              weight="rbf", sigma=None):
+    """
+    Build a kNN sparse affinity matrix.
+
+    mode:
+      - "connectivity": edges are 0/1
+      - "distance": store neighbor distances then convert to affinity
+
+    weight:
+      - "1-minus": affinity = max(0, 1 - dist)  (good for cosine dist)
+      - "rbf": affinity = exp(-dist^2/(2*sigma^2))
+    """
+    # get kNN
+    nn = NearestNeighbors(n_neighbors=k, metric=metric, n_jobs=-1).fit(X)
+    dist, ind = nn.kneighbors(X)
+
+    n = X.shape[0]
+    rows = np.repeat(np.arange(n), k)
+    cols = ind.reshape(-1)
+    d = dist.reshape(-1)
+
+    if mode == "connectivity":
+        data = np.ones_like(d, dtype=float)
+    else:
+        if weight == "1-minus":
+            data = 1.0 - d
+            data[data < 0] = 0.0
+        elif weight == "rbf":
+            if sigma is None:
+                sigma = np.median(dist)
+                if sigma <= 0:
+                    sigma = 1.0
+            data = np.exp(-(d**2) / (2 * sigma**2))
+        else:
+            raise ValueError("weight must be '1-minus' or 'rbf'")
+
+    G = csr_matrix((data, (rows, cols)), shape=(n, n))
+
+    # include self edges if desired
+    if include_self:
+        G.setdiag(1.0)
+
+    # mutual kNN option (keeps only i<->j edges)
+    if mutual:
+        G = G.multiply(G.T > 0)
+
+    # symmetrize (spectral likes symmetric affinity)
+    G = 0.5 * (G + G.T)
+    return G
+
 
 def get_initial_cluster_labels(X, clustering_model, n_clusters, n_neighbors=None, G=None):
     """
@@ -1064,19 +1118,22 @@ def get_initial_cluster_labels(X, clustering_model, n_clusters, n_neighbors=None
             eigen_solver="arpack",
             drop_first=False
         )
-        labels = discretize(embed, random_state=None)
+        labels = discretize(embed, random_state=0)
 
     elif clustering_model == "SC_kmeans":
         if n_neighbors is None:
             raise ValueError("n_neighbors must be provided for SpectralClustering.")
         model = SpectralClustering(
             n_clusters=n_clusters,
-            affinity="nearest_neighbors",
-            n_neighbors=n_neighbors,
-            assign_labels='kmeans'
+            affinity="precomputed",
+            # n_neighbors=n_neighbors,
+            assign_labels='kmeans',
+            n_init=10,
+            random_state=0,
         )
-        model.fit(X)
-        labels = model.labels_
+        # model.fit(X)
+        # labels = model.labels_
+        labels = model.fit_predict(G)
 
     elif clustering_model == "KMeans":
         model = KMeans(n_clusters=n_clusters, random_state=42)
@@ -1124,7 +1181,7 @@ def get_filtered_rois_per_animal_plane(animal_list, day_list, data_dir, oldlabel
         # Load cell index for this trained day
         cells_idx = np.load(os.path.join(file_dir, "cell_idx.npy"), allow_pickle=True)
         num_planes = len(cells_idx)
-        
+        print(f"Number of planes: {num_planes}")
         
         # Plane offsets for global indexing
         plane_offsets_for_global_idx = np.cumsum([0] + [len(x) for x in cells_idx[:-1]])
@@ -1134,17 +1191,18 @@ def get_filtered_rois_per_animal_plane(animal_list, day_list, data_dir, oldlabel
         trained_day_col = str(day-1)
         
         for ip in range(num_planes):
-            # Load ROI table for each animal and the day columns 
-            ROI_table = pd.read_csv(os.path.join(top_animal_dir, f"ROI_table_full_plane{ip}.csv"))
-            all_day_cols = [col for col in ROI_table.columns if re.match(r'^\d+$', str(col).strip())]   
-            
             # Skip the plane if data is missing for some days
             if skip_if_missing_plane_day and animal in skip_if_missing_plane_day:
                 plane_to_skip = skip_if_missing_plane_day[animal]
                 if plane_to_skip == ip:
                     print(f"Skipping animal {animal}, plane {ip}")
                     filtered_rois_per_animal_plane[animal][ip] = []
-                    continue
+                    continue            
+            
+            # Load ROI table for each animal and the day columns 
+            ROI_table = pd.read_csv(os.path.join(top_animal_dir, f"ROI_table_full_plane{ip}.csv"))
+            all_day_cols = [col for col in ROI_table.columns if re.match(r'^\d+$', str(col).strip())]   
+            
             
             # Find the rows where the trained day column matches the current plane's cell indices for all the target sessions
             cells_in_plane = np.asarray(cells_idx[ip]).astype(int)
@@ -1327,6 +1385,7 @@ def load_population_data_filtered(
 
             # Flatten trialtypes × frames
             n_cells = tempdata.shape[0]
+            print(n_cells)
             tempdata = tempdata.reshape(n_cells, -1)
 
             # Pad/crop to target_frames
