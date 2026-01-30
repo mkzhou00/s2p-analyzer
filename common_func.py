@@ -252,9 +252,6 @@ def get_changepoint_params(data, cue_types, threshold:float):
     return abruptness, learnedtrial, meanslope
 
 
-DF_COLUMMS = ["Animal", "Day", "Cue", "nlicks fullcue", "nlicks baseline"]
-
-
 def extract_licks_per_trial(CS, lick, nlicksCS, nlicksbaseCS, onset_from_cue, offset_from_cue):
     for ics in range(0, CS.shape[0]):
         tempanticipatorylicksCS = lick["Timestamp"].loc[
@@ -271,6 +268,8 @@ def extract_licks_per_trial(CS, lick, nlicksCS, nlicksbaseCS, onset_from_cue, of
 
 
 def get_df(animal, day, cue, nlicksCS, nlicksbaseCS):
+    DF_COLUMMS = ["Animal", "Day", "Cue", "nlicks fullcue", "nlicks baseline"]
+
     data = np.column_stack(
         [
             [animal] * nlicksCS.shape[0],
@@ -311,6 +310,8 @@ def extract_lick_psth_per_trial(cue_df, lick_df, pre_ms, post_ms, bin_ms):
 def produce_df_for_all_data(indir, onset_from_cue=0, offset_from_cue=3000, pre_ms=-3000, post_ms=6000, bin_ms=100):
     
     # Initialize alldata df and PSTH data for plotting
+    DF_COLUMMS = ["Animal", "Day", "Cue", "nlicks fullcue", "nlicks baseline"]
+
     alldata = pd.DataFrame(columns=DF_COLUMMS)
     psth_rows = []
     
@@ -514,3 +515,151 @@ def accumulative_lick_trial_by_trial(alldata, cue_types, numtrials, animals_to_r
             cumlick_data[animal][cue_type] = tempaccum
         numdays=None
     return cumlick_data
+
+
+def get_df_ind(day, cue, nlicksCS, nlicksbaseCS):
+    
+    DF_COLUMMS = ["Day", "Cue", "nlicks fullcue", "nlicks baseline"]
+    data = np.column_stack(
+        [
+            [day] * nlicksCS.shape[0],
+            [cue] * nlicksCS.shape[0],
+            nlicksCS,
+            nlicksbaseCS,
+        ]
+    )
+    df = pd.DataFrame(data=data, columns=DF_COLUMMS)
+    return df
+
+def produce_data_df_ind(datadir, onset_from_cue=0, offset_from_cue=3000):
+    
+    DF_COLUMMS = ["Day", "Cue", "nlicks fullcue", "nlicks baseline"]
+    alldata = pd.DataFrame(columns=DF_COLUMMS)
+    
+    tempmatfiles = next(os.walk(datadir))[2]
+    matfiles = [
+        f
+        for f in tempmatfiles
+        if "results" not in f and os.path.splitext(f)[1] == ".mat"
+    ]
+
+    day_nums = (
+        {}
+    )  # Run number for each experiment within an animal. 3 runs per animal in the design
+
+    for matfile in matfiles:
+        timestamps = [
+            matfile.split("_")[-1].split(".")[0] for matfile in matfiles
+        ]
+        temp = np.argsort(timestamps)
+        tempidx = list(temp)
+        for i in range(len(temp)):
+            tempidx[temp[i]] = i
+        for t, timestamp in enumerate(timestamps):
+            day_nums[timestamp] = tempidx[t] + 1
+
+    for matfile in matfiles:
+        # print(matfile)
+        timeofsession = matfile.split("_")[-1].split(".")[0]
+        day = day_nums[timeofsession]
+        temp = os.path.join(datadir, matfile)
+        
+        behaviordata = sio.loadmat(
+            os.path.join(datadir, os.path.splitext(matfile)[0])
+        )                
+        eventdata = behaviordata["eventlog"]
+        eventdf = pd.DataFrame(
+            data=eventdata, columns=["Events", "Timestamp", "Reward"]
+        )
+        params = behaviordata["params"]
+
+        CS1 = eventdf.loc[eventdf["Events"] == 15]
+        CS2 = eventdf.loc[eventdf["Events"] == 16]
+        CS3 = eventdf.loc[eventdf["Events"] == 17]
+
+        rewards = eventdf.loc[eventdf["Events"] == 10]
+        lick3s = eventdf.loc[eventdf["Events"] == 5]
+
+        nlicksCS1 = np.empty([CS1.shape[0], 1])
+        nlicksCS2 = np.empty([CS2.shape[0], 1])
+        nlicksCS3 = np.empty([CS3.shape[0], 1])
+        nlicksbaseCS1 = np.empty([CS1.shape[0], 1])
+        nlicksbaseCS2 = np.empty([CS2.shape[0], 1])
+        nlicksbaseCS3 = np.empty([CS3.shape[0], 1])
+
+        extract_licks_per_trial(CS1, lick3s, nlicksCS1, nlicksbaseCS1, onset_from_cue, offset_from_cue)
+        extract_licks_per_trial(CS2, lick3s, nlicksCS2, nlicksbaseCS2, onset_from_cue, offset_from_cue)
+        extract_licks_per_trial(CS3, lick3s, nlicksCS3, nlicksbaseCS3, onset_from_cue, offset_from_cue)
+
+        alldata = pd.concat([alldata,
+            get_df_ind(
+                day,
+                "CS1",
+                nlicksCS1,
+                nlicksbaseCS1,
+            )],
+            ignore_index=True,
+        )
+        alldata = pd.concat([alldata,
+            get_df_ind(
+                day,
+                "CS2",
+                nlicksCS2,
+                nlicksbaseCS2,
+            )],
+            ignore_index=True,
+        )
+        alldata = pd.concat([alldata,
+            get_df_ind(
+                day,
+                "CS3",
+                nlicksCS3,
+                nlicksbaseCS3,
+            )],
+            ignore_index=True,
+        )
+    alldata['Day'] = alldata['Day'].astype(int)            
+    return alldata
+
+
+def produce_data_per_session_ind(alldata, numdays):
+    COL_NAME=['Day','Cue', 'Performance_to_baseline', 'Performance_to_CSminus']
+    data_per_session = pd.DataFrame(columns=COL_NAME)
+    cue_types = ['CS1', 'CS2', 'CS3']
+    numtrials = [25, 25, 50]
+
+    if numdays == None:
+        numdays = len(alldata[(alldata['Cue']=='CS1')]) / (numtrials[0])
+        numdays = int(numdays)
+#         print(numdays)
+    # mean_licks_per_animal = np.nan*np.ones((numdays, len(cue_types)))
+    perf_to_base = np.nan*np.ones((numdays, len(cue_types)))
+    perf_to_CSm = np.nan*np.ones((numdays, len(cue_types)))
+    for day in range(numdays):
+        tempCS1 = np.array(alldata[(alldata['Cue']=='CS1') & (alldata['Day']==int(day+1)) ]['nlicks fullcue'], dtype=float)
+        tempCS1baseline = np.array(alldata[(alldata['Cue']=='CS1') & (alldata['Day']==int(day+1))]['nlicks baseline'], dtype=float)
+        tempCS2 = np.array(alldata[(alldata['Cue']=='CS2') & (alldata['Day']==int(day+1))]['nlicks fullcue'], dtype=float)
+        tempCS2baseline = np.array(alldata[(alldata['Cue']=='CS2') & (alldata['Day']==int(day+1))]['nlicks baseline'], dtype=float)
+        tempCS3 = np.array(alldata[(alldata['Cue']=='CS3') & (alldata['Day']==int(day+1))]['nlicks fullcue'], dtype=float)
+        tempCS3baseline = np.array(alldata[(alldata['Cue']=='CS3') & (alldata['Day']==int(day+1))]['nlicks baseline'], dtype=float)
+        
+        if tempCS1.size>0:
+            perf_to_base[day, 0] = central_tendency(tempCS1, tempCS1baseline)
+            perf_to_CSm[day, 0] = central_tendency(tempCS1, tempCS3)
+        if tempCS2.size>0:
+            perf_to_base[day, 1] = central_tendency(tempCS2, tempCS2baseline)
+            perf_to_CSm[day, 1] = central_tendency(tempCS2, tempCS3)
+        if tempCS3.size>0:
+            perf_to_base[day, 2] = central_tendency(tempCS3, tempCS3baseline)
+
+        for ct, cue_type in enumerate(cue_types):
+            data = np.column_stack([
+                                    int(day+1),
+                                    cue_type,
+                                    perf_to_base[day, ct],
+                                    perf_to_CSm[day, ct],
+                                    ])
+            data_per_session = pd.concat([data_per_session, pd.DataFrame(data=data,
+                                                                        columns=COL_NAME)],
+                                                    ignore_index=True)
+    return data_per_session

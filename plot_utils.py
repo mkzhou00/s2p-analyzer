@@ -1141,7 +1141,7 @@ def plot_ave_psth_overlay_days(
     hz=True,
     show_sem=True,
     sem_alpha=0.15,              # base alpha for SEM; will also be scaled by day alpha
-    alpha_range=(0.25, 1.0),     # earliest -> latest darkness
+    alpha_range=(0.2, 1.0),     # earliest -> latest darkness
 ):
     df = psth_df.copy()
     row_col = row_mode
@@ -1216,7 +1216,7 @@ def plot_ave_psth_overlay_days(
             line_rgba = (*base_line_rgba[:3], a)
             fill_rgba = (*base_fill_rgba[:3], min(1.0, sem_alpha * a))
 
-            ax.plot(t, mean, color=line_rgba, lw=2.0, label=f"{row_col} {rv}")
+            ax.plot(t, mean, color=line_rgba, lw=1, label=f"{row_col} {rv}")
             if show_sem:
                 ax.fill_between(t, mean - sem, mean + sem, color=fill_rgba, lw=0)
 
@@ -1238,3 +1238,129 @@ def plot_ave_psth_overlay_days(
 
     fig.tight_layout()
     return fig, axs
+
+
+def plot_evolution_over_learning_ind(
+    data, cue_types, numdays, pvals=None, key="Performance_to_baseline"
+):
+    fig, axs = plt.subplots(1, 3, figsize=(2 * 3, 2), dpi=200, sharey="row")
+    mean_licks_on_day = np.nan * np.ones((numdays, len(cue_types)))
+    
+    for day in range(numdays):
+        for ct, cue_type in enumerate(cue_types):
+            temp = data[
+                (data["Cue"] == cue_type)
+                & (data["Day"] == str(day + 1))
+            ][key]
+            
+            mean_licks_on_day[day,ct] = temp
+
+    if axs is not None:
+        for ct, cue_type in enumerate(cue_types):
+            ax = axs[ct]
+            ax.plot(
+                range(numdays),
+                mean_licks_on_day[:, ct],
+                color='k',
+                linestyle="-",
+                linewidth=1,
+            )
+            ax.set_xticks(range(numdays))
+            ax.set_xticklabels([str(a + 1) for a in range(numdays)], fontsize=8)
+            standardize_plot_graphics(ax)
+            
+    axs[1].set_xlabel("Session number")
+    axs[0].set_ylabel("Lick rate (Hz)")
+    fig.tight_layout()
+    return fig
+
+
+def plot_cumlick_ind(data, cue_types, numdays):
+    fig, axs = plt.subplots(1, 3, figsize=(2*3, 2), dpi=200, sharey="row")
+
+    for ct, cue_type in enumerate(cue_types):
+        all_correct_licks = []
+        for day in range(numdays):
+            tempcue = np.array(data[
+                (data["Cue"] == cue_type)
+                & (data["Day"] == (day + 1))
+            ]['nlicks fullcue'], dtype=float)
+            tempbaseline = np.array(data[
+                (data["Cue"] == cue_type)
+                & (data["Day"] == (day + 1))
+            ]['nlicks baseline'], dtype=float)
+            tempcorrectlick = np.array([tempcue - tempbaseline])
+            all_correct_licks = np.append(all_correct_licks, tempcorrectlick)
+    
+        y = np.cumsum(all_correct_licks) #get acummulative sum for this cue type for this animal for all days
+        x = np.arange(0, (len(y)), 1)
+        axs[ct].plot(x, y, color='k', linestyle='-', linewidth=1)
+        axs[ct].plot([x[0], x[-1]], [y[0], y[-1]], linestyle='--', color='#808080')
+        
+        learned_trial_params = getCumsumChangePoint(x, y)
+        if ct != 2:
+            learned_trial = learned_trial_params['learned_trial']
+            axs[ct].axvline(learned_trial, linestyle='--', linewidth=0.5, color='k')
+        standardize_plot_graphics(axs[ct])
+    axs[1].set_xlabel("Session number")
+    axs[0].set_ylabel("Cumsm lick number")
+    fig.tight_layout()
+    return fig
+
+
+def plot_statistical_differences_to_CSminus(alldata, cue_types, num_days):
+    results = {}
+    for day in range(num_days):
+
+        # Baseline subtracted licks
+        tempCS1 = np.array(alldata[(alldata['Cue']=='CS1') & (alldata['Day']==int(day+1)) ]['nlicks fullcue'], dtype=float)
+        tempCS1baseline = np.array(alldata[(alldata['Cue']=='CS1') & (alldata['Day']==int(day+1))]['nlicks baseline'], dtype=float)
+        tempCS2 = np.array(alldata[(alldata['Cue']=='CS2') & (alldata['Day']==int(day+1))]['nlicks fullcue'], dtype=float)
+        tempCS2baseline = np.array(alldata[(alldata['Cue']=='CS2') & (alldata['Day']==int(day+1))]['nlicks baseline'], dtype=float)
+        tempCS3 = np.array(alldata[(alldata['Cue']=='CS3') & (alldata['Day']==int(day+1))]['nlicks fullcue'], dtype=float)
+        tempCS3baseline = np.array(alldata[(alldata['Cue']=='CS3') & (alldata['Day']==int(day+1))]['nlicks baseline'], dtype=float)
+        # print(tempCS2)
+        cs1_licks = tempCS1 - tempCS1baseline
+        cs2_licks = tempCS2 - tempCS2baseline
+        cs3_licks = tempCS3 - tempCS3baseline
+
+        # Perform t-tests
+        t_stat_cs1_cs3, p_val_cs1_cs3 = stats.ttest_ind(cs1_licks, cs3_licks, nan_policy='omit')
+        t_stat_cs2_cs3, p_val_cs2_cs3 = stats.ttest_ind(cs2_licks, cs3_licks, nan_policy='omit')
+        
+        results[day] = {
+            'CS1-CS3': {'t_stat': t_stat_cs1_cs3, 'p_val': p_val_cs1_cs3},
+            'CS2-CS3': {'t_stat': t_stat_cs2_cs3, 'p_val': p_val_cs2_cs3}
+        }
+    
+    days = list(results.keys())
+    # cs1_cs3_pvals = [results[day]['CS1-CS3']['p_val'] for day in days]
+    # cs2_cs3_pvals = [results[day]['CS2-CS3']['p_val'] for day in days]
+    
+    # For plotting purposes, replace NaN values in CS1-CS3 p-values with 1
+    cs1_cs3_pvals = [
+        1 if math.isnan(results[day]['CS1-CS3']['p_val']) else results[day]['CS1-CS3']['p_val']
+        for day in days]
+
+    # Replace NaN values in CS2-CS3 p-values with 1
+    cs2_cs3_pvals = [
+        1 if math.isnan(results[day]['CS2-CS3']['p_val']) else results[day]['CS2-CS3']['p_val']
+        for day in days]
+
+    x = days
+    fig = plt.figure(figsize=(10, 5))
+    plt.scatter(x, cs1_cs3_pvals, label='CS1-CS3', color='g', s=100)
+    plt.scatter([p + 0.4 for p in x], cs2_cs3_pvals, label='CS2-CS3', color='r', s=100)
+
+    plt.plot(x, cs1_cs3_pvals, color='g', linestyle='-', alpha=0.5)
+    plt.plot([p + 0.4 for p in x], cs2_cs3_pvals, color='r', linestyle='-', alpha=0.5)
+
+    plt.xticks([p + 0.2 for p in x], [day + 1 for day in days])  # Adjusted for +1 indexing
+    plt.ylim(min(min(cs1_cs3_pvals), min(cs2_cs3_pvals)) - 0.1, 1)
+    plt.ylabel('p-value')
+    plt.title('Statistical Differences between Cue Types')
+    plt.axhline(y=0.05, color='k', linestyle='--', label='Significance Level (0.05)')
+    plt.legend()
+    plt.tight_layout()
+    
+    return fig, results  # Return the plt object
