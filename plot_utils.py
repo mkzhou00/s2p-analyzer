@@ -563,13 +563,16 @@ def plot_activity_clusters(
                 pre_window_size, linestyle="--", color="k", linewidth=0.5
             )
             axs[k, cluster].axvline(
+                pre_window_size + framerate, linestyle="--", color="k", linewidth=0.5
+            )
+            axs[k, cluster].axvline(
                 pre_window_size + frames_to_reward,
                 linestyle="--",
                 color="k",
                 linewidth=0.5,
             )
             if cluster == 0:
-                axs[k, 0].set_ylabel("%s\nNeurons" % (tempkey))
+                axs[k, 0].set_ylabel("%s\nNeurons" % (tempkey), fontsize=12)
 
             # Plot average PSTH for each cluster, each CS
             ax = axs[-1, cluster]
@@ -579,7 +582,9 @@ def plot_activity_clusters(
                 color=colors_for_key[tempkey],
                 label=tempkey if (cluster == (len(uniquelabels) - 1)) else None,
             )
+            # cue onset/offset and reward times
             ax.axvline(pre_window_size, linestyle="--", color="k", linewidth=0.5)
+            ax.axvline(pre_window_size + framerate, linestyle="--", color="k", linewidth=0.5)
             ax.axvline(
                 pre_window_size + frames_to_reward,
                 linestyle="--",
@@ -613,7 +618,7 @@ def plot_activity_clusters(
             )
             standardize_plot_graphics(ax)
 
-        axs[-1, 0].set_ylabel("Mean fluor")
+        axs[-1, 0].set_ylabel("Mean fluor", fontsize=12)
         axs[0, cluster].set_title(
             "Cluster %d\n(n=%d)" % (cluster + 1, numroisincluster[c])
         )
@@ -622,7 +627,9 @@ def plot_activity_clusters(
     buffer = 0.01
     for ax in axs[-1, :]:
         ax.set_ylim(global_min - buffer, global_max + buffer)
-        
+        if ax != axs[-1, 0]:
+            ax.set_yticks([])
+
     fig_activity_cluster.text(
         0.5,
         0.05,
@@ -748,6 +755,7 @@ def plot_decoding_accuracy_across_time(accuracy, accuracy_chance, time_labels=No
 
 def plot_activity_clusters_pooled_multiday(
     populationdata,
+    cell_keys_reference,
     labels,
     uniquelabels,
     numdays,
@@ -759,11 +767,13 @@ def plot_activity_clusters_pooled_multiday(
     framerate,
     day_labels: list,
     reference_day=0,
-    cmax=0.1,
+    cmax=0.8,
     percent_keep=0.30,   # <-- NEW (0-1], e.g. 0.30 for top 30%
 ):
     colors_for_key = {"CS1+": (0, 0.5, 1), "CS2+": (1, 0.5, 0), "CS3-": (0.5, 0.5, 0.5)}
-
+    plotted_cells = {}  # store which cells were plotted for each cluster)
+    # cmax = np.amax(populationdata[0])
+    
     # clamp percent_keep
     if percent_keep is None:
         percent_keep = 1.0
@@ -783,6 +793,67 @@ def plot_activity_clusters_pooled_multiday(
 
     def col_of(c_idx, day):
         return c_idx * numdays + day
+    
+    cluster_cmap_mode="symmetric"     # "symmetric" or "raw"
+    cluster_cmap_percentiles=(1, 99)  # robust range
+    cluster_cmax_min=0.2              # minimum half-range to avoid tiny scales
+
+    def compute_cluster_vrange(cluster_id):
+        idx = np.where(labels == cluster_id)[0]
+        if idx.size == 0:
+            return (-cmax, cmax)
+
+        ref_exists = ~np.isnan(populationdata[idx, reference_day, 0])
+        idx_ref = idx[ref_exists]
+        if idx_ref.size == 0:
+            return (-cmax, cmax)
+
+        ref = populationdata[idx_ref, reference_day, 0*window_size:(0+1)*window_size]
+        sortresponse = np.argsort(np.mean(ref[:, sortwindow[0]:sortwindow[1]], axis=1))[::-1]
+        idx_sorted = idx_ref[sortresponse]
+
+        n_keep = max(1, int(np.ceil(percent_keep * idx_sorted.size)))
+        idx_sorted = idx_sorted[:n_keep]
+
+        vals_list = []  # <-- flat list of floats (no dimension issues)
+
+        for day in range(numdays):
+            day_exists = ~np.isnan(populationdata[idx_sorted, day, 0])
+            idx_day = idx_sorted[day_exists]
+            if idx_day.size == 0:
+                continue
+
+            for k in range(len(trial_types)):
+                temp = populationdata[idx_day, day, k*window_size:(k+1)*window_size]
+                if temp.size:
+                    # force numpy array, flatten to 1D, append values
+                    vals_list.extend(np.asarray(temp).ravel().tolist())
+
+        if len(vals_list) == 0:
+            return (-cmax, cmax)
+
+        vals = np.asarray(vals_list, dtype=np.float64).reshape(-1)
+        vals = vals[np.isfinite(vals)]
+        if vals.size == 0:
+            return (-cmax, cmax)
+
+        lo, hi = np.percentile(vals, cluster_cmap_percentiles)
+
+        if cluster_cmap_mode == "symmetric":
+            half = float(max(abs(lo), abs(hi)))
+            half = max(half, float(cluster_cmax_min))
+            return (-half, half)
+        else:
+            lo, hi = float(lo), float(hi)
+            if hi - lo < 2 * cluster_cmax_min:
+                mid = 0.5 * (hi + lo)
+                lo, hi = mid - cluster_cmax_min, mid + cluster_cmax_min
+            return (lo, hi)
+
+    cluster_vranges = {}
+    for cluster in uniquelabels:
+        cluster_id = int(cluster)
+        cluster_vranges[cluster_id] = compute_cluster_vrange(cluster_id)
 
     for c_idx, cluster in enumerate(uniquelabels):
         idx = np.where(labels == cluster)[0]
@@ -800,9 +871,14 @@ def plot_activity_clusters_pooled_multiday(
         idx_sorted = idx_ref[sortresponse]
 
         # --- NEW: keep only the top X% of cells in this cluster (based on idx_sorted) ---
-        if percent_keep < 1.0:
-            n_keep = max(1, int(np.ceil(percent_keep * idx_sorted.size)))
-            idx_sorted = idx_sorted[:n_keep]
+        # if percent_keep < 1.0:
+        n_keep = max(1, int(np.ceil(percent_keep * idx_sorted.size)))
+        idx_sorted = idx_sorted[:n_keep]
+        plotted_cells[int(cluster)] = {
+            "global_indices": idx_sorted.copy(),
+            # "cell_keys_groupID": [cell_keys_common[i] for i in idx_sorted],
+            "cell_keys_reference": [cell_keys_reference[i] for i in idx_sorted],
+        }   
         # ---------------------------------------------------------------------------
 
         for day in range(numdays):
@@ -820,12 +896,14 @@ def plot_activity_clusters_pooled_multiday(
                     global_min = min(global_min, float(np.min(mean_response)))
                     global_max = max(global_max, float(np.max(mean_response)))
 
+                vmin, vmax = cluster_vranges[int(cluster)]
+
                 sns.heatmap(
                     temp,
                     ax=axs[k, col],
                     cmap=plt.get_cmap("coolwarm"),
-                    vmin=-cmax,
-                    vmax=cmax,
+                    vmin=vmin,
+                    vmax=vmax,
                     cbar=(c_idx == 0 and day == 0),
                     cbar_ax=cbar_ax if (c_idx == 0 and day == 0) else None,
                     cbar_kws={"label": "Normalized fluorescence"},
@@ -835,10 +913,11 @@ def plot_activity_clusters_pooled_multiday(
                 axs[k, col].set_xticklabels([])
                 axs[k, col].set_yticks([])
                 axs[k, col].axvline(pre_window_size, linestyle="--", color="k", linewidth=0.5)
+                axs[k, col].axvline(pre_window_size + framerate, linestyle="--", color="k", linewidth=0.5)
                 axs[k, col].axvline(pre_window_size + frames_to_reward, linestyle="--", color="k", linewidth=0.5)
 
                 if col == 0:
-                    axs[k, col].set_ylabel(f"{tempkey}\nNeurons")
+                    axs[k, col].set_ylabel(f"{tempkey}\nNeurons", fontsize=12)
 
                 axp = axs[-1, col]
                 axp = tsplot(
@@ -848,6 +927,7 @@ def plot_activity_clusters_pooled_multiday(
                     label=tempkey if (c_idx == n_clusters - 1 and day == numdays - 1) else None,
                 )
                 axp.axvline(pre_window_size, linestyle="--", color="k", linewidth=0.5)
+                axp.axvline(pre_window_size + framerate, linestyle="--", color="k", linewidth=0.5)
                 axp.axvline(pre_window_size + frames_to_reward, linestyle="--", color="k", linewidth=0.5)
                 axp.set_xticks([0, pre_window_size, pre_window_size + frames_to_reward, window_size])
                 axp.set_xticklabels(
@@ -865,8 +945,10 @@ def plot_activity_clusters_pooled_multiday(
         buffer = 0.01
         for col in range(n_cols):
             axs[-1, col].set_ylim(global_min - buffer, global_max + buffer)
+            if col != 0:
+                axs[-1, col].set_yticks([])
 
-    axs[-1, 0].set_ylabel("Mean fluor")
+    axs[-1, 0].set_ylabel("Mean fluor", fontsize=12)
     axs[-1, -1].legend(
         bbox_to_anchor=(0.94, 0.22),
         bbox_transform=fig.transFigure,
@@ -876,7 +958,7 @@ def plot_activity_clusters_pooled_multiday(
     fig.text(0.5, 0.05, "Time from cue (s)", fontsize=12, ha="center", va="center")
     fig.subplots_adjust(left=0.08, right=0.93, bottom=0.1, top=0.86, wspace=0.1, hspace=0.1)
 
-    return fig
+    return fig, plotted_cells
 
 
 ### HERE BELOW ARE BEHAVIORAL PLOTTING FUNCTIONS
@@ -1364,3 +1446,142 @@ def plot_statistical_differences_to_CSminus(alldata, cue_types, num_days):
     plt.tight_layout()
     
     return fig, results  # Return the plt object
+
+
+def plot_example_cells_across_learning(
+    populationdata,          # (Ncells, numdays, trial_types*window_size)
+    cell_indices,            # list/array of global indices into populationdata
+    trial_types,             # e.g. ["CS1+","CS2+","CS3-"]
+    window_size,
+    pre_window_size,
+    frames_to_reward,
+    framerate,
+    day_labels=None,         # list length numdays (strings); optional
+    colors_for_key=None,     # dict cue->color tuple; optional
+    sharey="row",            # "row", "all", or None
+    show_sem=False,          # if True, will show SEM across (not possible per single cell) -> kept False
+):
+    """
+    Plots individual example cell activity across sessions (learning days).
+    Layout:
+      rows = example cells
+      cols = cue types
+      in each subplot: one line per day (same cell), days ordered 0..numdays-1
+    """
+
+    if colors_for_key is None:
+        colors_for_key = {"CS1+": (0, 0.5, 1), "CS2+": (1, 0.5, 0), "CS3-": (0.5, 0.5, 0.5)}
+        colors_for_tworeward_day = {
+            "CS1+": (0.05, 0.30, 0.65),   # dark blue
+            "CS2+": (0.75, 0.30, 0.05),   # dark orange
+            "CS3-": (0.35, 0.35, 0.35),   # dark gray
+        }
+    
+    cell_indices = np.asarray(cell_indices, dtype=int)
+    numdays = populationdata.shape[1]
+    n_cues = len(trial_types)
+
+    if day_labels is None:
+        day_labels = [f"Day {i}" for i in range(numdays)]
+    assert len(day_labels) == numdays, "day_labels must match populationdata.shape[1]"
+
+    # x-axis in seconds relative to cue onset
+    t = (np.arange(window_size) - pre_window_size) / float(framerate)
+
+    n_rows = len(cell_indices)
+    n_cols = n_cues
+
+    fig, axs = plt.subplots(
+        n_rows, n_cols,
+        figsize=(3.2 * n_cols, 2.2 * n_rows),
+        dpi=200,
+        sharex=True,
+        sharey=(sharey == "all")
+    )
+    if n_rows == 1 and n_cols == 1:
+        axs = np.array([[axs]])
+    elif n_rows == 1:
+        axs = axs[None, :]
+    elif n_cols == 1:
+        axs = axs[:, None]
+
+    # A simple “learning progression” style: earlier thin, later thicker
+    # (avoids alpha/transparency problems when saving to EPS/PS)
+    if numdays == 1:
+        lw_by_day = [1.5]
+    else:
+        lw_by_day = np.linspace(0.7, 2, numdays)
+
+    # For consistent y-lims per row if desired
+    row_ylims = []
+
+    for r, gi in enumerate(cell_indices):
+        # Precompute y-range for this cell across all days/cues (for sharey="row")
+        if sharey == "row":
+            ymin, ymax = np.inf, -np.inf
+            for d in range(numdays):
+                for k in range(n_cues):
+                    y = populationdata[gi, d, k*window_size:(k+1)*window_size]
+                    if np.any(~np.isnan(y)):
+                        ymin = min(ymin, float(np.nanmin(y)))
+                        ymax = max(ymax, float(np.nanmax(y)))
+            if np.isfinite(ymin) and np.isfinite(ymax):
+                row_ylims.append((ymin, ymax))
+            else:
+                row_ylims.append((None, None))
+
+        for c, cue in enumerate(trial_types):
+            ax = axs[r, c]
+
+            for d in range(numdays):
+                y = populationdata[gi, d, c*window_size:(c+1)*window_size]
+                if np.all(np.isnan(y)):
+                    continue
+                if d == numdays-1 and "two rewards" in day_labels:
+                    ax.plot(
+                        t, y,
+                        color=colors_for_tworeward_day.get(cue, (0, 0, 0)),
+                        linewidth=float(lw_by_day[d]),
+                        label=day_labels[d] if (r == 0 and c == n_cols - 1) else None,  # legend once
+                    )
+                else:
+                    ax.plot(
+                        t, y,
+                        color=colors_for_key.get(cue, (0, 0, 0)),
+                        linewidth=float(lw_by_day[d]),
+                        label=day_labels[d] if (r == 0 and c == n_cols - 1) else None,  # legend once
+                    )
+                
+
+            # event markers
+            ax.axvline(0, linestyle="--", color="k", linewidth=0.7)
+            ax.axvline(frames_to_reward / float(framerate), linestyle="--", color="k", linewidth=0.7)
+
+            if r == 0:
+                ax.set_title(cue, fontsize=10)
+            if c == 0:
+                ax.set_ylabel(f"Cell {gi}\nMean fluorescence", fontsize=9)
+
+            ax.set_xlim(t[0], t[-1])
+            ax.grid(False)
+            standardize_plot_graphics(ax)
+
+    # apply row-wise y-lims if requested
+    if sharey == "row":
+        for r in range(n_rows):
+            ymin, ymax = row_ylims[r]
+            if ymin is None:
+                continue
+            pad = 0.02 * (ymax - ymin + 1e-12)
+            for c in range(n_cols):
+                axs[r, c].set_ylim(ymin - pad, ymax + pad)
+
+    # x label only bottom row
+    for c in range(n_cols):
+        axs[-1, c].set_xlabel("Time from cue (s)")
+
+    # legend once
+    axs[0, -1].legend(frameon=False, fontsize=8, loc="upper right")
+
+    fig.tight_layout()
+    return fig

@@ -1169,7 +1169,7 @@ def get_filtered_rois_per_animal_plane(animal_list, day_list, data_dir, oldlabel
     """
     filtered_rois_per_animal_plane = {}
     newlabels_flag = {}
-    
+    animal_offset = 0
     per_animal_req_day = target_day_list
     
     for a, (day, animal) in enumerate(zip(day_list, animal_list)):
@@ -1182,9 +1182,13 @@ def get_filtered_rois_per_animal_plane(animal_list, day_list, data_dir, oldlabel
         cells_idx = np.load(os.path.join(file_dir, "cell_idx.npy"), allow_pickle=True)
         num_planes = len(cells_idx)
         print(f"Number of planes: {num_planes}")
+        n_cells_animal = sum(len(x) for x in cells_idx)
+        segment = oldlabels[animal_offset : animal_offset + n_cells_animal]
+        print(animal, len(segment), n_cells_animal)
         
         # Plane offsets for global indexing
         plane_offsets_for_global_idx = np.cumsum([0] + [len(x) for x in cells_idx[:-1]])
+        print(plane_offsets_for_global_idx)
         filtered_rois_per_animal_plane[animal] = {}
         newlabels_flag[animal] = {}
         
@@ -1201,7 +1205,9 @@ def get_filtered_rois_per_animal_plane(animal_list, day_list, data_dir, oldlabel
             
             # Load ROI table for each animal and the day columns 
             ROI_table = pd.read_csv(os.path.join(top_animal_dir, f"ROI_table_full_plane{ip}.csv"))
-            all_day_cols = [col for col in ROI_table.columns if re.match(r'^\d+$', str(col).strip())]   
+            ROI_table.columns = ROI_table.columns.map(lambda x: str(x).strip())
+            all_day_cols = [c for c in ROI_table.columns if c.isdigit()]
+            # all_day_cols = [col for col in ROI_table.columns if re.match(r'^\d+$', str(col).strip())]   
             
             
             # Find the rows where the trained day column matches the current plane's cell indices for all the target sessions
@@ -1239,10 +1245,11 @@ def get_filtered_rois_per_animal_plane(animal_list, day_list, data_dir, oldlabel
             local_idx = np.asarray(local_idx, dtype=int)
             
             # Get the new labels for these cells and sort by day 1 index
-            global_indices = plane_offsets_for_global_idx[ip] +local_idx
+            global_indices = plane_offsets_for_global_idx[ip] + local_idx
             assert(len(global_indices) == len(filtered_ROIs)), "Length mismatch!"
             
-            labels = np.asarray(oldlabels)[global_indices].tolist()
+            labels = np.asarray(oldlabels)[animal_offset + global_indices].tolist()
+            # print(labels)
             filtered_ROIs['labels'] = labels
 
             # filtered_ROIs = filtered_ROIs.sort_values(by=trained_day_col)
@@ -1262,6 +1269,8 @@ def get_filtered_rois_per_animal_plane(animal_list, day_list, data_dir, oldlabel
             
             assert (len(filtered_ROIs) == len(labels)), "Length mismatch!"
             # Now filtered_rois_per_animal_plane[animal][ip] is the list of cell indices within plane ip for animal, present on day 1 and in ROI table
+        
+        animal_offset += n_cells_animal
 
     return filtered_rois_per_animal_plane, newlabels_flag
 
@@ -1290,7 +1299,7 @@ def load_population_data_filtered(
         file_dir = os.path.join(data_dir, animal, f"d{day}", "files")
 
         # --- Load raw data ---
-        rawdata = np.load(os.path.join(file_dir, "F_around_cue_raw.npy"), allow_pickle=True)
+        rawdata = np.load(os.path.join(file_dir, "F_around_cue_zscore.npy"), allow_pickle=True)
         cells_idx = np.load(os.path.join(file_dir, "cell_idx.npy"), allow_pickle=True)
 
         # Concatenate mapping: plane0 cells, plane1 cells, ...
@@ -1429,7 +1438,7 @@ def load_population_data_multiday(
     verbose=True
 ):
     def _subset_trials_and_baseline(rawdata):
-        n_trials = [len(rawdata[i]) for i in range(rawdata.shape[0])]
+        n_trials = [len(rawdata[i]) for i in range (rawdata.shape[0])]
         min_trials = min(n_trials)
         rng = np.random.default_rng()
 
@@ -1466,13 +1475,19 @@ def load_population_data_multiday(
     population_rows = []
     labels_rows = []
     animal_id_rows = []
+    
+    # --- matched cell key lists for Common df and for the refence day ---
     cell_keys = []
+    cell_keys_on_reference_day = []
 
     for ai, animal in enumerate(animal_list):
         days = list(days_per_animal[ai])
         if verbose:
             print(f"\n=== Loading {animal} days {days} ===")
 
+        ref_day = days[reference_day_index]
+        ref_key = str(ref_day - 1)
+        
         roi_table_for_animal = filtered_rois_per_animal_plane[animal]
 
         for ip, filtered_df in roi_table_for_animal.items():
@@ -1523,7 +1538,7 @@ def load_population_data_multiday(
                 if verbose:
                     print(f"  [none] {animal} plane {ip}: no cells present on all requested days")
                 continue
-
+                  
             # Labels are fixed per cell (from filtered_df)
             plane_labels = df_common["labels"].astype(int).values
 
@@ -1534,7 +1549,7 @@ def load_population_data_multiday(
             # --- Extract data for each day ---
             for di, day in enumerate(days):
                 file_dir = os.path.join(data_dir, animal, f"d{day}", "files")
-                rawdata = np.load(os.path.join(file_dir, "F_around_cue_raw.npy"), allow_pickle=True)
+                rawdata = np.load(os.path.join(file_dir, "F_around_cue_zscore.npy"), allow_pickle=True)
                 cells_idx = np.load(os.path.join(file_dir, "cell_idx.npy"), allow_pickle=True)
 
                 subset_by_cell = _subset_trials_and_baseline(rawdata)
@@ -1566,6 +1581,13 @@ def load_population_data_multiday(
             animal_id_rows.extend([animal] * n_common)
             for ridx in df_common.index.tolist():
                 cell_keys.append((animal, ip, int(ridx)))
+            
+            target_ids = df_common['0'].astype(int).values.tolist()
+            print(target_ids)            
+            ref_ids = df_common[ref_key].astype(int).values.tolist()
+            print(ref_ids)
+
+            cell_keys_on_reference_day.extend([(animal, ip, int(cid)) for cid in ref_ids])
 
             if verbose:
                 # helpful diagnostics: how many rows were dropped because of day mismatch
@@ -1579,6 +1601,6 @@ def load_population_data_multiday(
     labels = np.concatenate([np.asarray(x) for x in labels_rows], axis=0)
     animal_id = np.asarray(animal_id_rows)
 
-    assert populationdata.shape[0] == len(labels) == len(animal_id) == len(cell_keys)
+    assert populationdata.shape[0] == len(labels) == len(animal_id) == len(cell_keys) == len(cell_keys_on_reference_day), "Length mismatch in final data assembly!"
 
-    return populationdata, animal_id, cell_keys, labels, days_per_animal
+    return populationdata, animal_id, cell_keys, cell_keys_on_reference_day, labels, days_per_animal

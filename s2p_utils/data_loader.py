@@ -243,22 +243,25 @@ def load_population_data(animal_list, day_list, data_dir, result_dir, target_fra
     
     pop_path = os.path.join(result_dir, "populationdata.npy")
     id_path = os.path.join(result_dir, "animal_id.npy")
-        
+    cells_idx_path = os.path.join(result_dir, "cells_idx.npy")
+    
     if os.path.exists(os.path.join(result_dir, "populationdata.npy")):
-        return np.load(pop_path, allow_pickle=True), np.load(id_path, allow_pickle=True)
+        return np.load(pop_path, allow_pickle=True), np.load(id_path, allow_pickle=True), np.load(cells_idx_path, allow_pickle=True)
 
     else:
         populationdata_list = []
         animal_id = []
+        cells_idx_list = []
                     
         for a, animal in enumerate(animal_list):
             
             total_cells = 0
             print(animal)
             file_dir = os.path.join(data_dir, animal, "d"+str(day_list[a]), "files")
-            rawdata = np.load(os.path.join(file_dir, "F_around_cue_raw.npy"), allow_pickle=True)  # shape: (trial_types, ntrials, ncells, nframes)
+            rawdata = np.load(os.path.join(file_dir, "F_around_cue_zscore.npy"), allow_pickle=True)  # shape: (trial_types, ntrials, ncells, nframes)
             cells_idx = np.load(os.path.join(file_dir, "cell_idx.npy"), allow_pickle=True) # load cell index            
             total_cells= sum(len(x) for x in cells_idx)
+            cells_idx_list.append(cells_idx)
             
             print(total_cells, " cells loaded from animal ", animal)
             # Trials per cue and min across cues
@@ -323,10 +326,11 @@ def load_population_data(animal_list, day_list, data_dir, result_dir, target_fra
             #     tempdata[:, start:end] -= baseline
             populationdata_list.append(tempdata)
             animal_id.extend([animal] * ncells) # track neuron to specific animal
-            
+        
         populationdata  = np.vstack(populationdata_list) # shape: (total_ncells, trial_types*window_size)
         animal_id = np.array(animal_id)
         np.save(pop_path, populationdata)
         np.save(id_path, animal_id)
+        np.save(cells_idx_path, cells_idx_list)
         
-        return populationdata, animal_id
+        return populationdata, animal_id, cells_idx_list
